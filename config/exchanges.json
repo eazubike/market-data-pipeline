@@ -1,0 +1,142 @@
+{
+  "NASDAQ": {
+    "name": "NASDAQ Stock Market",
+    "timezone": "America/New_York",
+    "open_time": "09:30",
+    "close_time": "16:00",
+    "currency": "USD",
+    "ticker_suffix": "",
+    "holidays": [
+      "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03",
+      "2026-05-25", "2026-07-03", "2026-09-07", "2026-11-26", "2026-12-25"
+    ]
+  },
+  "NYSE": {
+    "name": "New York Stock Exchange",
+    "timezone": "America/New_York",
+    "open_time": "09:30",
+    "close_time": "16:00",
+    "currency": "USD",
+    "ticker_suffix": "",
+    "holidays": [
+      "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03",
+      "2026-05-25", "2026-07-03", "2026-09-07", "2026-11-26", "2026-12-25"
+    ]
+  },
+  "LSE": {
+    "name": "London Stock Exchange",
+    "timezone": "Europe/London",
+    "open_time": "08:00",
+    "close_time": "16:30",
+    "currency": "GBP",
+    "ticker_suffix": ".L",
+    "holidays": [
+      "2026-01-01", "2026-04-03", "2026-04-06", "2026-05-04",
+      "2026-05-25", "2026-08-31", "2026-12-25", "2026-12-28"
+    ]
+  },
+  "XETRA": {
+    "name": "Frankfurt Stock Exchange (XETRA)",
+    "timezone": "Europe/Berlin",
+    "open_time": "09:00",
+    "close_time": "17:30",
+    "currency": "EUR",
+    "ticker_suffix": ".DE",
+    "holidays": [
+      "2026-01-01", "2026-04-03", "2026-04-06", "2026-05-01",
+      "2026-05-14", "2026-05-25", "2026-10-03", "2026-12-24",
+      "2026-12-25", "2026-12-31"
+    ]
+  },
+  "EURONEXT": {
+    "name": "Euronext Paris",
+    "timezone": "Europe/Paris",
+    "open_time": "09:00",
+    "close_time": "17:30",
+    "currency": "EUR",
+    "ticker_suffix": ".PA",
+    "holidays": [
+      "2026-01-01", "2026-04-03", "2026-04-06", "2026-05-01",
+      "2026-05-25", "2026-12-25", "2026-12-26"
+    ]
+  },
+  "EURONEXT_AMS": {
+    "name": "Euronext Amsterdam",
+    "timezone": "Europe/Amsterdam",
+    "open_time": "09:00",
+    "close_time": "17:30",
+    "currency": "EUR",
+    "ticker_suffix": ".AS",
+    "holidays": [
+      "2026-01-01", "2026-04-03", "2026-04-06", "2026-05-01",
+      "2026-05-25", "2026-12-25", "2026-12-26"
+    ]
+  },
+  "EURONEXT_BRU": {
+    "name": "Euronext Brussels",
+    "timezone": "Europe/Brussels",
+    "open_time": "09:00",
+    "close_time": "17:30",
+    "currency": "EUR",
+    "ticker_suffix": ".BR",
+    "holidays": [
+      "2026-01-01", "2026-04-03", "2026-04-06", "2026-05-01",
+      "2026-05-21", "2026-05-25", "2026-07-21", "2026-08-15",
+      "2026-11-01", "2026-11-11", "2026-12-25", "2026-12-26"
+    ]
+  },
+  "EURONEXT_LIS": {
+    "name": "Euronext Lisbon",
+    "timezone": "Europe/Lisbon",
+    "open_time": "08:00",
+    "close_time": "16:30",
+    "currency": "EUR",
+    "ticker_suffix": ".LS",
+    "holidays": [
+      "2026-01-01", "2026-04-03", "2026-04-25", "2026-05-01",
+      "2026-06-10", "2026-08-15", "2026-10-05", "2026-11-01",
+      "2026-12-01", "2026-12-08", "2026-12-25"
+    ]
+  },
+  "BORSA_ITALIANA": {
+    "name": "Borsa Italiana (Milan)",
+    "timezone": "Europe/Rome",
+    "open_time": "09:00",
+    "close_time": "17:30",
+    "currency": "EUR",
+    "ticker_suffix": ".MI",
+    "holidays": [
+      "2026-01-01", "2026-04-03", "2026-04-06", "2026-05-01",
+      "2026-08-15", "2026-12-08", "2026-12-24", "2026-12-25",
+      "2026-12-26", "2026-12-31"
+    ]
+  },
+  "TSE": {
+    "name": "Tokyo Stock Exchange",
+    "timezone": "Asia/Tokyo",
+    "open_time": "09:00",
+    "close_time": "15:30",
+    "currency": "JPY",
+    "ticker_suffix": ".T",
+    "holidays": [
+      "2026-01-01", "2026-01-12", "2026-02-11", "2026-02-23",
+      "2026-03-20", "2026-04-29", "2026-05-03", "2026-05-04",
+      "2026-05-05", "2026-07-20", "2026-09-21", "2026-09-23",
+      "2026-10-12", "2026-11-03", "2026-11-23", "2026-12-31"
+    ]
+  },
+  "HKEX": {
+    "name": "Hong Kong Stock Exchange",
+    "timezone": "Asia/Hong_Kong",
+    "open_time": "09:30",
+    "close_time": "16:00",
+    "currency": "HKD",
+    "ticker_suffix": ".HK",
+    "holidays": [
+      "2026-01-01", "2026-01-27", "2026-01-28", "2026-01-29",
+      "2026-04-03", "2026-04-06", "2026-04-07", "2026-05-01",
+      "2026-05-19", "2026-06-19", "2026-07-01", "2026-10-01",
+      "2026-10-02", "2026-12-25", "2026-12-26"
+    ]
+  }
+}

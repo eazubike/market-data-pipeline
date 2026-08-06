@@ -1,0 +1,111 @@
+{
+  "Comment": "Corporate Actions Pipeline — collects stock splits and dividends once per day at 07:00 UTC before any exchange opens.",
+  "StartAt": "InjectExchangeList",
+  "States": {
+
+    "InjectExchangeList": {
+      "Type": "Pass",
+      "Comment": "Seed the full list of exchanges into the execution context.",
+      "Parameters": {
+        "exchanges": [
+          "NASDAQ",
+          "NYSE",
+          "LSE",
+          "XETRA",
+          "EURONEXT",
+          "TSE",
+          "HKEX"
+        ]
+      },
+      "Next": "CollectCorporateActionsPerExchange"
+    },
+
+    "CollectCorporateActionsPerExchange": {
+      "Type": "Map",
+      "Comment": "Fan-out over all exchanges in parallel. MaxConcurrency=7 runs them all at once.",
+      "ItemsPath": "$.exchanges",
+      "MaxConcurrency": 7,
+      "Iterator": {
+        "StartAt": "CollectCorporateActionsForExchange",
+        "States": {
+          "CollectCorporateActionsForExchange": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${CollectCorporateActionsFunctionArn}",
+              "Payload": {
+                "exchange.$": "$",
+                "date.$": "States.Format('{}', $$.Execution.StartTime)"
+              }
+            },
+            "ResultSelector": {
+              "exchange.$": "$.Payload.exchange",
+              "splits_found.$": "$.Payload.splits_found",
+              "dividends_found.$": "$.Payload.dividends_found",
+              "tickers_failed.$": "$.Payload.tickers_failed",
+              "splits_s3_key.$": "$.Payload.splits_s3_key",
+              "dividends_s3_key.$": "$.Payload.dividends_s3_key"
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "Lambda.ServiceException",
+                  "Lambda.AWSLambdaException",
+                  "States.TaskFailed"
+                ],
+                "IntervalSeconds": 10,
+                "MaxAttempts": 2,
+                "BackoffRate": 2.0,
+                "JitterStrategy": "FULL"
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": ["States.ALL"],
+                "ResultPath": "$.error",
+                "Next": "CollectCorporateActionsFailed"
+              }
+            ],
+            "End": true
+          },
+          "CollectCorporateActionsFailed": {
+            "Type": "Pass",
+            "Comment": "Soft-fail — log which exchange failed but let others continue.",
+            "Parameters": {
+              "exchange.$": "$",
+              "splits_found": 0,
+              "dividends_found": 0,
+              "tickers_failed": -1,
+              "error.$": "$.error"
+            },
+            "End": true
+          }
+        }
+      },
+      "ResultPath": "$.ca_results",
+      "Next": "UpdateGlueCatalog"
+    },
+
+    "UpdateGlueCatalog": {
+      "Type": "Task",
+      "Comment": "Register any new corporate_actions/ partitions so Athena can query them.",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${UpdateGlueCatalogFunctionArn}",
+        "Payload": {
+          "run_timestamp.$": "$$.Execution.StartTime"
+        }
+      },
+      "ResultPath": "$.glue_result",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "States.TaskFailed"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "End": true
+    }
+  }
+}

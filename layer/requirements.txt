@@ -1,0 +1,13 @@
+# Custom Lambda Layer — ONLY packages NOT in the AWS SDK for pandas managed layer.
+# The AWSSDKPandas-Python312 layer already includes:
+#   pandas, pyarrow, numpy, boto3, botocore, s3transfer, urllib3, requests,
+#   certifi, charset-normalizer, idna, six, python-dateutil, typing-extensions
+#
+# We only install what that layer does NOT have:
+
+yfinance==0.2.61
+aws-lambda-powertools==3.3.0
+vaderSentiment==3.3.2
+feedparser==6.0.11
+sgmllib3k==1.0.0
+beautifulsoup4==4.12.3

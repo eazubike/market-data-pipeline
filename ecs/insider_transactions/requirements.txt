@@ -1,0 +1,6 @@
+yfinance>=0.2.61
+pandas>=2.0.0
+pyarrow>=14.0.0
+boto3>=1.26.0
+feedparser>=6.0.11
+requests>=2.31.0

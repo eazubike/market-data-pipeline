@@ -1,0 +1,214 @@
+{
+  "Comment": "Market Data Pipeline — collects stock snapshots and financial news every 30 minutes",
+  "StartAt": "CheckMarketHours",
+  "States": {
+    "CheckMarketHours": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${CheckMarketHoursFunctionArn}",
+        "Payload.$": "$"
+      },
+      "ResultSelector": {
+        "open_exchanges.$": "$.Payload.open_exchanges"
+      },
+      "ResultPath": "$.market_check",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "AnyExchangesOpen"
+    },
+
+    "AnyExchangesOpen": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.market_check.open_exchanges[0]",
+          "IsPresent": true,
+          "Next": "ParallelCollect"
+        }
+      ],
+      "Default": "NoExchangesOpen"
+    },
+
+    "NoExchangesOpen": {
+      "Type": "Succeed",
+      "Comment": "All exchanges are closed — nothing to collect"
+    },
+
+    "ParallelCollect": {
+      "Type": "Parallel",
+      "Branches": [
+        {
+          "StartAt": "CollectStocksPerExchange",
+          "States": {
+            "CollectStocksPerExchange": {
+              "Type": "Map",
+              "ItemsPath": "$.market_check.open_exchanges",
+              "MaxConcurrency": 10,
+              "Iterator": {
+                "StartAt": "CollectStocksForExchange",
+                "States": {
+                  "CollectStocksForExchange": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::lambda:invoke",
+                    "Parameters": {
+                      "FunctionName": "${CollectStocksFunctionArn}",
+                      "Payload": {
+                        "exchange.$": "$",
+                        "run_timestamp.$": "$$.Execution.StartTime"
+                      }
+                    },
+                    "ResultSelector": {
+                      "exchange.$": "$.Payload.exchange",
+                      "tickers_ok.$": "$.Payload.tickers_ok",
+                      "tickers_failed.$": "$.Payload.tickers_failed",
+                      "stocks_s3_key.$": "$.Payload.stocks_s3_key",
+                      "fundamentals_s3_key.$": "$.Payload.fundamentals_s3_key"
+                    },
+                    "Retry": [
+                      {
+                        "ErrorEquals": [
+                          "Lambda.ServiceException",
+                          "Lambda.AWSLambdaException",
+                          "States.TaskFailed"
+                        ],
+                        "IntervalSeconds": 5,
+                        "MaxAttempts": 3,
+                        "BackoffRate": 2.0,
+                        "JitterStrategy": "FULL"
+                      }
+                    ],
+                    "Catch": [
+                      {
+                        "ErrorEquals": ["States.ALL"],
+                        "ResultPath": "$.error",
+                        "Next": "CollectStocksFailed"
+                      }
+                    ],
+                    "End": true
+                  },
+                  "CollectStocksFailed": {
+                    "Type": "Pass",
+                    "Parameters": {
+                      "exchange.$": "$",
+                      "tickers_ok": 0,
+                      "tickers_failed": -1,
+                      "error.$": "$.error"
+                    },
+                    "End": true
+                  }
+                }
+              },
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "CollectNews",
+          "States": {
+            "CollectNews": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {
+                "FunctionName": "${CollectNewsFunctionArn}",
+                "Payload": {
+                  "run_timestamp.$": "$$.Execution.StartTime"
+                }
+              },
+              "ResultSelector": {
+                "articles_new.$": "$.Payload.articles_new",
+                "articles_skipped_duplicate.$": "$.Payload.articles_skipped_duplicate",
+                "news_s3_keys.$": "$.Payload.news_s3_keys"
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": [
+                    "Lambda.ServiceException",
+                    "Lambda.AWSLambdaException",
+                    "States.TaskFailed"
+                  ],
+                  "IntervalSeconds": 5,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2.0
+                }
+              ],
+              "End": true
+            }
+          }
+        }
+      ],
+      "ResultPath": "$.parallel_results",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "EmitMetricsOnError"
+        }
+      ],
+      "Next": "UpdateGlueCatalog"
+    },
+
+    "UpdateGlueCatalog": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${UpdateGlueCatalogFunctionArn}",
+        "Payload": {
+          "run_timestamp.$": "$$.Execution.StartTime"
+        }
+      },
+      "ResultPath": "$.glue_result",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "States.TaskFailed"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "EmitMetrics"
+    },
+
+    "EmitMetrics": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${EmitMetricsFunctionArn}",
+        "Payload": {
+          "parallel_results.$": "$.parallel_results",
+          "run_timestamp.$": "$$.Execution.StartTime",
+          "status": "SUCCESS"
+        }
+      },
+      "ResultPath": "$.metrics_result",
+      "End": true
+    },
+
+    "EmitMetricsOnError": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${EmitMetricsFunctionArn}",
+        "Payload": {
+          "error.$": "$.error.Error",
+          "cause.$": "$.error.Cause",
+          "run_timestamp.$": "$$.Execution.StartTime",
+          "status": "FAILED"
+        }
+      },
+      "Next": "PipelineFailed"
+    },
+
+    "PipelineFailed": {
+      "Type": "Fail",
+      "Error": "PipelineError",
+      "Cause": "One or more pipeline steps failed — see CloudWatch logs"
+    }
+  }
+}

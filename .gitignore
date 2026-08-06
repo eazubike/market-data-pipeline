@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+*.egg
+
+# CDK
+infrastructure/cdk.out/
+cdk.out/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+*.env
+
+# Zip artifacts
+*.zip
+
+# Node (CDK deps)
+node_modules/
+
+# Lambda layer installed packages (rebuilt on deploy)
+layer/python/
+
+# Local test output
+local_output/
+
+# Temp wheels
+tmp_wheels/
+
+# Test input/output files
+input.json
+input2.json
+input_small.json
+stock_response.json

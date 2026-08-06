@@ -1,0 +1,8 @@
+yfinance>=0.2.61
+pandas>=2.0.0
+vaderSentiment>=3.3.2
+feedparser>=6.0.11
+requests>=2.31.0
+curl_cffi>=0.7
+xlrd>=2.0.1
+openpyxl>=3.1.0

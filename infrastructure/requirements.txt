@@ -1,0 +1,4 @@
+# CDK infrastructure dependencies
+aws-cdk-lib==2.177.0
+aws-cdk.aws-glue-alpha==2.177.0a0
+constructs==10.4.2
