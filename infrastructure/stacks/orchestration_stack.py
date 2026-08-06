@@ -183,8 +183,8 @@ class OrchestrationStack(cdk.Stack):
         scheduler.CfnSchedule(
             self,
             "MarketDataSchedule",
-            name="market-data-30min",
-            schedule_expression="rate(30 minutes)",
+            name="market-data-hourly",
+            schedule_expression="rate(1 hour)",
             flexible_time_window=scheduler.CfnSchedule.FlexibleTimeWindowProperty(
                 mode="FLEXIBLE",
                 maximum_window_in_minutes=5,
@@ -195,7 +195,7 @@ class OrchestrationStack(cdk.Stack):
                 input=json.dumps({"source": "eventbridge-scheduler"}),
             ),
             state="ENABLED",
-            description="Trigger market data collection every 30 minutes",
+            description="Trigger market data collection every hour",
         )
 
         # ── CloudWatch Alarms ─────────────────────────────────────────────────
@@ -288,12 +288,12 @@ class OrchestrationStack(cdk.Stack):
 
         news_state_machine.grant_start_execution(scheduler_role)
 
-        # Weekday schedule — every 30 minutes Mon–Fri
+        # Weekday schedule — every hour Mon–Fri
         scheduler.CfnSchedule(
             self,
             "NewsWeekdaySchedule",
-            name="market-data-news-weekday-30min",
-            schedule_expression="cron(*/30 * ? * MON-FRI *)",
+            name="market-data-news-weekday-1h",
+            schedule_expression="rate(1 hour)",
             flexible_time_window=scheduler.CfnSchedule.FlexibleTimeWindowProperty(
                 mode="FLEXIBLE",
                 maximum_window_in_minutes=5,
@@ -304,7 +304,7 @@ class OrchestrationStack(cdk.Stack):
                 input=json.dumps({"source": "eventbridge-scheduler-news-weekday"}),
             ),
             state="ENABLED",
-            description="Collect financial news every 30 minutes on weekdays",
+            description="Collect financial news every hour",
         )
 
         # Weekend schedule — every 4 hours Sat–Sun
