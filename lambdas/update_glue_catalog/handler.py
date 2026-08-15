@@ -52,6 +52,8 @@ TABLE_REGISTRY = [
     {"name": "splits", "prefix": "corporate_actions/type=split/", "depth": 2},
     {"name": "dividends", "prefix": "corporate_actions/type=dividend/", "depth": 2},
     {"name": "insider_transactions", "prefix": "insider_transactions/", "depth": 2},
+    {"name": "signals", "prefix": "signals/", "depth": 1},
+    {"name": "opportunities", "prefix": "signals/type=opportunities/", "depth": 1},
 ]
 
 

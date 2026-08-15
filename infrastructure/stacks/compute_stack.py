@@ -294,6 +294,47 @@ class ComputeStack(cdk.Stack):
             )
         )
 
+        # ── detect-signals (daily signal detection engine) ─────────────────
+        self.detect_signals_fn = lambda_.Function(
+            self,
+            "DetectSignals",
+            function_name="market-data-detect-signals",
+            runtime=PYTHON_RUNTIME,
+            handler="handler.lambda_handler",
+            code=lambda_.Code.from_asset(f"{LAMBDAS_PATH}/detect_signals"),
+            layers=all_layers,
+            memory_size=512,
+            timeout=cdk.Duration.minutes(15),
+            environment={**common_env},
+        )
+        data_bucket.grant_read(self.detect_signals_fn)
+        data_bucket.grant_write(self.detect_signals_fn, "signals/*")
+        data_bucket.grant_write(self.detect_signals_fn, "athena-results/*")
+        self.detect_signals_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "athena:StartQueryExecution",
+                    "athena:GetQueryExecution",
+                    "athena:GetQueryResults",
+                ],
+                resources=["*"],
+            )
+        )
+        self.detect_signals_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=[
+                    "glue:GetTable",
+                    "glue:GetPartitions",
+                    "glue:GetDatabase",
+                ],
+                resources=[
+                    f"arn:aws:glue:{self.region}:{self.account}:catalog",
+                    f"arn:aws:glue:{self.region}:{self.account}:database/{glue_database_name}",
+                    f"arn:aws:glue:{self.region}:{self.account}:table/{glue_database_name}/*",
+                ],
+            )
+        )
+
         # ── refresh-tickers (daily before market open) ─────────────────────────
         self.refresh_tickers_fn = lambda_.Function(
             self,

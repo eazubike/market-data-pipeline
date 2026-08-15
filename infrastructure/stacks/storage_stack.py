@@ -345,6 +345,61 @@ class StorageStack(cdk.Stack):
             ],
         )
 
+        # Signals table
+        glue.S3Table(
+            self,
+            "SignalsTable",
+            database=glue_db,
+            table_name="signals",
+            bucket=self.data_bucket,
+            s3_prefix="signals/",
+            data_format=glue.DataFormat.PARQUET,
+            partition_keys=[
+                glue.Column(name="date", type=glue.Schema.DATE),
+            ],
+            columns=[
+                glue.Column(name="symbol", type=glue.Schema.STRING),
+                glue.Column(name="exchange", type=glue.Schema.STRING),
+                glue.Column(name="signal_date", type=glue.Schema.DATE),
+                glue.Column(name="signal_type", type=glue.Schema.STRING),
+                glue.Column(name="score", type=glue.Schema.DOUBLE),
+                glue.Column(name="confidence", type=glue.Schema.DOUBLE),
+                glue.Column(name="description", type=glue.Schema.STRING),
+                glue.Column(name="evidence", type=glue.Schema.STRING),
+            ],
+        )
+
+        # Opportunities table (composite scored stocks)
+        glue.S3Table(
+            self,
+            "OpportunitiesTable",
+            database=glue_db,
+            table_name="opportunities",
+            bucket=self.data_bucket,
+            s3_prefix="signals/type=opportunities/",
+            data_format=glue.DataFormat.PARQUET,
+            partition_keys=[
+                glue.Column(name="date", type=glue.Schema.DATE),
+            ],
+            columns=[
+                glue.Column(name="symbol", type=glue.Schema.STRING),
+                glue.Column(name="exchange", type=glue.Schema.STRING),
+                glue.Column(name="signal_date", type=glue.Schema.DATE),
+                glue.Column(name="composite_score", type=glue.Schema.DOUBLE),
+                glue.Column(name="verdict", type=glue.Schema.STRING),
+                glue.Column(name="signals_fired", type=glue.Schema.INTEGER),
+                glue.Column(name="top_signals", type=glue.Schema.STRING),
+                glue.Column(name="sector", type=glue.Schema.STRING),
+                glue.Column(name="current_price", type=glue.Schema.DOUBLE),
+                glue.Column(name="pe_ratio", type=glue.Schema.DOUBLE),
+                glue.Column(name="earnings_date", type=glue.Schema.STRING),
+                glue.Column(name="beat_rate", type=glue.Schema.DOUBLE),
+                glue.Column(name="insider_net_30d", type=glue.Schema.DOUBLE),
+                glue.Column(name="sentiment_score", type=glue.Schema.DOUBLE),
+                glue.Column(name="analyst_upside_pct", type=glue.Schema.DOUBLE),
+            ],
+        )
+
         # ── Outputs ───────────────────────────────────────────────────────────
         cdk.CfnOutput(self, "DataBucketName", value=self.data_bucket.bucket_name)
         cdk.CfnOutput(self, "DedupTableName", value=self.dedup_table.table_name)

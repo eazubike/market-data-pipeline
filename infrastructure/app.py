@@ -41,6 +41,7 @@ OrchestrationStack(
     collect_news_fn=compute.collect_news_fn,
     update_glue_catalog_fn=compute.update_glue_catalog_fn,
     emit_metrics_fn=compute.emit_metrics_fn,
+    detect_signals_fn=compute.detect_signals_fn,
     ecs_cluster=compute.ecs_cluster,
     financials_task_def=compute.financials_task_def,
     corporate_actions_task_def=compute.corporate_actions_task_def,

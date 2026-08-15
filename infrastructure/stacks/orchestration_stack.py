@@ -34,6 +34,7 @@ class OrchestrationStack(cdk.Stack):
         collect_news_fn: lambda_.Function,
         update_glue_catalog_fn: lambda_.Function,
         emit_metrics_fn: lambda_.Function,
+        detect_signals_fn: lambda_.Function,
         ecs_cluster: "ecs.Cluster",
         financials_task_def: "ecs.FargateTaskDefinition",
         corporate_actions_task_def: "ecs.FargateTaskDefinition",
@@ -936,6 +937,66 @@ class OrchestrationStack(cdk.Stack):
             ),
             state="ENABLED",
             description="Glue partition sync once daily on weekends at 20:00 UTC",
+        )
+
+        # ── Signal Detection State Machine (daily, 23:00 UTC) ────────────────
+        # Runs after all data pipelines complete. Queries Athena across all
+        # tables, scores stocks on multiple factors, and writes opportunities.
+
+        signals_log_group = logs.LogGroup(
+            self,
+            "SignalsSfnLogGroup",
+            log_group_name="/aws/states/market-data-signals",
+            retention=logs.RetentionDays.TWO_WEEKS,
+            removal_policy=cdk.RemovalPolicy.DESTROY,
+        )
+
+        detect_signals_task = sfn_tasks.LambdaInvoke(
+            self,
+            "DetectSignalsTask",
+            lambda_function=detect_signals_fn,
+            payload=sfn.TaskInput.from_object({}),
+            result_path="$.signals_result",
+        )
+        detect_signals_task.add_retry(
+            errors=["States.TaskFailed", "Lambda.ServiceException"],
+            interval=cdk.Duration.seconds(30),
+            max_attempts=2,
+            backoff_rate=2.0,
+        )
+
+        signals_state_machine = sfn.StateMachine(
+            self,
+            "SignalDetectionPipeline",
+            state_machine_name="market-data-signals-v2",
+            definition_body=sfn.DefinitionBody.from_chainable(detect_signals_task),
+            state_machine_type=sfn.StateMachineType.STANDARD,
+            timeout=cdk.Duration.minutes(20),
+            logs=sfn.LogOptions(
+                destination=signals_log_group,
+                level=sfn.LogLevel.ERROR,
+                include_execution_data=False,
+            ),
+            tracing_enabled=True,
+        )
+
+        signals_state_machine.grant_start_execution(scheduler_role)
+
+        scheduler.CfnSchedule(
+            self,
+            "SignalDetectionSchedule",
+            name="market-data-signals-daily",
+            schedule_expression="cron(0 23 ? * MON-FRI *)",
+            flexible_time_window=scheduler.CfnSchedule.FlexibleTimeWindowProperty(
+                mode="OFF",
+            ),
+            target=scheduler.CfnSchedule.TargetProperty(
+                arn=signals_state_machine.state_machine_arn,
+                role_arn=scheduler_role.role_arn,
+                input=json.dumps({"source": "eventbridge-scheduler-signals"}),
+            ),
+            state="ENABLED",
+            description="Run signal detection daily at 23:00 UTC after all pipelines complete",
         )
 
         # ── Outputs ───────────────────────────────────────────────────────────
