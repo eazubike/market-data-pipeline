@@ -307,12 +307,12 @@ class OrchestrationStack(cdk.Stack):
             description="Collect financial news every hour",
         )
 
-        # Weekend schedule — every 4 hours Sat–Sun
+        # Weekend schedule — once on Saturday at 20:00 UTC
         scheduler.CfnSchedule(
             self,
             "NewsWeekendSchedule",
-            name="market-data-news-weekend-4h",
-            schedule_expression="cron(0 */4 ? * SAT-SUN *)",
+            name="market-data-news-weekend",
+            schedule_expression="cron(0 20 ? * SAT *)",
             flexible_time_window=scheduler.CfnSchedule.FlexibleTimeWindowProperty(
                 mode="OFF",
             ),
@@ -322,7 +322,7 @@ class OrchestrationStack(cdk.Stack):
                 input=json.dumps({"source": "eventbridge-scheduler-news-weekend"}),
             ),
             state="ENABLED",
-            description="Collect financial news every 4 hours on weekends",
+            description="Collect financial news once on Saturday at 20:00 UTC",
         )
 
         # ── Corporate Actions State Machine (daily) ───────────────────────────
@@ -851,11 +851,12 @@ class OrchestrationStack(cdk.Stack):
         glue_sync_state_machine.grant_start_execution(scheduler_role)
 
         # 01:00 UTC
+        # Weekday: 01:00, 07:00, 13:00, 19:00 UTC Mon–Fri
         scheduler.CfnSchedule(
             self,
             "GlueSyncSchedule01",
             name="market-data-glue-sync-01",
-            schedule_expression="cron(0 1 * * ? *)",
+            schedule_expression="cron(0 1 ? * MON-FRI *)",
             flexible_time_window=scheduler.CfnSchedule.FlexibleTimeWindowProperty(
                 mode="OFF",
             ),
@@ -865,15 +866,14 @@ class OrchestrationStack(cdk.Stack):
                 input=json.dumps({"source": "eventbridge-glue-sync-01"}),
             ),
             state="ENABLED",
-            description="Glue partition sync at 01:00 UTC",
+            description="Glue partition sync at 01:00 UTC weekdays",
         )
 
-        # 07:00 UTC
         scheduler.CfnSchedule(
             self,
             "GlueSyncSchedule07",
             name="market-data-glue-sync-07",
-            schedule_expression="cron(0 7 * * ? *)",
+            schedule_expression="cron(0 7 ? * MON-FRI *)",
             flexible_time_window=scheduler.CfnSchedule.FlexibleTimeWindowProperty(
                 mode="OFF",
             ),
@@ -883,15 +883,14 @@ class OrchestrationStack(cdk.Stack):
                 input=json.dumps({"source": "eventbridge-glue-sync-07"}),
             ),
             state="ENABLED",
-            description="Glue partition sync at 07:00 UTC",
+            description="Glue partition sync at 07:00 UTC weekdays",
         )
 
-        # 13:00 UTC
         scheduler.CfnSchedule(
             self,
             "GlueSyncSchedule13",
             name="market-data-glue-sync-13",
-            schedule_expression="cron(0 13 * * ? *)",
+            schedule_expression="cron(0 13 ? * MON-FRI *)",
             flexible_time_window=scheduler.CfnSchedule.FlexibleTimeWindowProperty(
                 mode="OFF",
             ),
@@ -901,15 +900,14 @@ class OrchestrationStack(cdk.Stack):
                 input=json.dumps({"source": "eventbridge-glue-sync-13"}),
             ),
             state="ENABLED",
-            description="Glue partition sync at 13:00 UTC",
+            description="Glue partition sync at 13:00 UTC weekdays",
         )
 
-        # 19:00 UTC
         scheduler.CfnSchedule(
             self,
             "GlueSyncSchedule19",
             name="market-data-glue-sync-19",
-            schedule_expression="cron(0 19 * * ? *)",
+            schedule_expression="cron(0 19 ? * MON-FRI *)",
             flexible_time_window=scheduler.CfnSchedule.FlexibleTimeWindowProperty(
                 mode="OFF",
             ),
@@ -919,7 +917,25 @@ class OrchestrationStack(cdk.Stack):
                 input=json.dumps({"source": "eventbridge-glue-sync-19"}),
             ),
             state="ENABLED",
-            description="Glue partition sync at 19:00 UTC",
+            description="Glue partition sync at 19:00 UTC weekdays",
+        )
+
+        # Weekend: once on Saturday at 20:00 UTC
+        scheduler.CfnSchedule(
+            self,
+            "GlueSyncScheduleWeekend",
+            name="market-data-glue-sync-weekend",
+            schedule_expression="cron(0 20 ? * SAT *)",
+            flexible_time_window=scheduler.CfnSchedule.FlexibleTimeWindowProperty(
+                mode="OFF",
+            ),
+            target=scheduler.CfnSchedule.TargetProperty(
+                arn=glue_sync_state_machine.state_machine_arn,
+                role_arn=scheduler_role.role_arn,
+                input=json.dumps({"source": "eventbridge-glue-sync-weekend"}),
+            ),
+            state="ENABLED",
+            description="Glue partition sync once on Saturday 20:00 UTC",
         )
 
         # ── Outputs ───────────────────────────────────────────────────────────

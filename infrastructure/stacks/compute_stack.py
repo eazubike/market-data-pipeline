@@ -100,7 +100,7 @@ class ComputeStack(cdk.Stack):
             handler="handler.lambda_handler",
             code=lambda_.Code.from_asset(f"{LAMBDAS_PATH}/collect_stocks"),
             layers=all_layers,
-            memory_size=1024,
+            memory_size=768,
             timeout=cdk.Duration.minutes(15),
             environment={**common_env},
         )
@@ -122,7 +122,7 @@ class ComputeStack(cdk.Stack):
             handler="handler.lambda_handler",
             code=lambda_.Code.from_asset(f"{LAMBDAS_PATH}/compact_stocks"),
             layers=all_layers,
-            memory_size=1024,
+            memory_size=256,
             timeout=cdk.Duration.minutes(15),
             environment={**common_env},
         )
@@ -137,7 +137,7 @@ class ComputeStack(cdk.Stack):
             handler="handler.lambda_handler",
             code=lambda_.Code.from_asset(f"{LAMBDAS_PATH}/collect_news"),
             layers=all_layers,
-            memory_size=512,
+            memory_size=320,
             timeout=cdk.Duration.minutes(15),
             environment={
                 **common_env,
