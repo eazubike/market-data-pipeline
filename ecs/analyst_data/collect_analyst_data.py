@@ -78,6 +78,64 @@ EARN_SCHEMA = pa.schema(
     ]
 )
 
+PROFILE_SCHEMA = pa.schema(
+    [
+        pa.field("symbol", pa.string()),
+        pa.field("exchange", pa.string()),
+        pa.field("collection_date", pa.date32()),
+        pa.field("company_name", pa.string()),
+        pa.field("sector", pa.string()),
+        pa.field("industry", pa.string()),
+        pa.field("description", pa.string()),
+        pa.field("country", pa.string()),
+        pa.field("employees", pa.int64()),
+        pa.field("website", pa.string()),
+        pa.field("forward_pe", pa.float64()),
+        pa.field("forward_eps", pa.float64()),
+        pa.field("trailing_pe", pa.float64()),
+        pa.field("price_to_sales", pa.float64()),
+        pa.field("price_to_book", pa.float64()),
+        pa.field("enterprise_value", pa.float64()),
+        pa.field("ebitda", pa.float64()),
+        pa.field("revenue_growth", pa.float64()),
+        pa.field("earnings_growth", pa.float64()),
+        pa.field("profit_margin", pa.float64()),
+        pa.field("operating_margin", pa.float64()),
+        pa.field("return_on_equity", pa.float64()),
+        pa.field("return_on_assets", pa.float64()),
+        pa.field("free_cash_flow", pa.float64()),
+        pa.field("beta", pa.float64()),
+    ]
+)
+
+INST_HOLDERS_SCHEMA = pa.schema(
+    [
+        pa.field("symbol", pa.string()),
+        pa.field("exchange", pa.string()),
+        pa.field("collection_date", pa.date32()),
+        pa.field("holder", pa.string()),
+        pa.field("shares", pa.int64()),
+        pa.field("value", pa.float64()),
+        pa.field("pct_held", pa.float64()),
+        pa.field("date_reported", pa.date32()),
+    ]
+)
+
+EARNINGS_HISTORY_SCHEMA = pa.schema(
+    [
+        pa.field("symbol", pa.string()),
+        pa.field("exchange", pa.string()),
+        pa.field("collection_date", pa.date32()),
+        pa.field("quarter_end", pa.date32()),
+        pa.field("eps_estimate", pa.float64()),
+        pa.field("eps_actual", pa.float64()),
+        pa.field("revenue_estimate", pa.float64()),
+        pa.field("revenue_actual", pa.float64()),
+        pa.field("eps_surprise_pct", pa.float64()),
+        pa.field("beat_eps", pa.bool_()),
+    ]
+)
+
 
 def load_tickers(exchange: str) -> list[str]:
     key = f"config/tickers/{exchange}.csv"
@@ -226,6 +284,145 @@ def _collect_earnings_dates(t, symbol, exchange, collection_date):
     return rows
 
 
+def _collect_company_profile(t, symbol, exchange, collection_date):
+    """Extract company profile, sector, industry, and key ratios from ticker.info."""
+    try:
+        info = t.info
+        if not info or not isinstance(info, dict):
+            return None
+        return {
+            "symbol": symbol,
+            "exchange": exchange,
+            "collection_date": collection_date,
+            "company_name": info.get("longName") or info.get("shortName") or "",
+            "sector": info.get("sector") or "",
+            "industry": info.get("industry") or "",
+            "description": (info.get("longBusinessSummary") or "")[:2000],
+            "country": info.get("country") or "",
+            "employees": int(info.get("fullTimeEmployees") or 0),
+            "website": info.get("website") or "",
+            "forward_pe": _safe_float(info.get("forwardPE")),
+            "forward_eps": _safe_float(info.get("forwardEps")),
+            "trailing_pe": _safe_float(info.get("trailingPE")),
+            "price_to_sales": _safe_float(info.get("priceToSalesTrailing12Months")),
+            "price_to_book": _safe_float(info.get("priceToBook")),
+            "enterprise_value": _safe_float(info.get("enterpriseValue")),
+            "ebitda": _safe_float(info.get("ebitda")),
+            "revenue_growth": _safe_float(info.get("revenueGrowth")),
+            "earnings_growth": _safe_float(info.get("earningsGrowth")),
+            "profit_margin": _safe_float(info.get("profitMargins")),
+            "operating_margin": _safe_float(info.get("operatingMargins")),
+            "return_on_equity": _safe_float(info.get("returnOnEquity")),
+            "return_on_assets": _safe_float(info.get("returnOnAssets")),
+            "free_cash_flow": _safe_float(info.get("freeCashflow")),
+            "beta": _safe_float(info.get("beta")),
+        }
+    except Exception:
+        return None
+
+
+def _collect_institutional_holders(t, symbol, exchange, collection_date):
+    """Extract top institutional holders from ticker.institutional_holders."""
+    rows = []
+    try:
+        holders = t.institutional_holders
+        if holders is None or holders.empty:
+            return rows
+        for _, row in holders.iterrows():
+            date_reported = None
+            if pd.notna(row.get("Date Reported")):
+                date_reported = pd.Timestamp(row["Date Reported"]).date()
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "exchange": exchange,
+                    "collection_date": collection_date,
+                    "holder": str(row.get("Holder", "")),
+                    "shares": int(row.get("Shares", 0) or 0),
+                    "value": _safe_float(row.get("Value")),
+                    "pct_held": _safe_float(row.get("% Out")),
+                    "date_reported": date_reported,
+                }
+            )
+    except Exception:
+        pass
+    return rows
+
+
+def _collect_earnings_history(t, symbol, exchange, collection_date):
+    """
+    Extract historical earnings beat/miss record.
+    Uses earnings_dates (past entries) to build the history.
+    """
+    rows = []
+    try:
+        # Try earnings_history first (some yfinance versions)
+        eh = getattr(t, "earnings_history", None)
+        if eh is not None and not eh.empty:
+            for _, row in eh.iterrows():
+                eps_est = _safe_float(row.get("epsEstimate"))
+                eps_act = _safe_float(row.get("epsActual"))
+                surprise = _safe_float(row.get("surprisePercent"))
+                quarter_end = None
+                if pd.notna(row.get("quarter")):
+                    quarter_end = pd.Timestamp(row["quarter"]).date()
+                beat = (
+                    eps_act > eps_est
+                    if not (pd.isna(eps_act) or pd.isna(eps_est))
+                    else None
+                )
+                rows.append(
+                    {
+                        "symbol": symbol,
+                        "exchange": exchange,
+                        "collection_date": collection_date,
+                        "quarter_end": quarter_end,
+                        "eps_estimate": eps_est,
+                        "eps_actual": eps_act,
+                        "revenue_estimate": float("nan"),
+                        "revenue_actual": float("nan"),
+                        "eps_surprise_pct": surprise,
+                        "beat_eps": beat,
+                    }
+                )
+            return rows
+
+        # Fallback: derive from earnings_dates (past entries only)
+        ed = t.earnings_dates
+        if ed is None or ed.empty:
+            return rows
+        now = pd.Timestamp.now(tz="UTC")
+        for earn_ts, row in ed.iterrows():
+            if hasattr(earn_ts, "__gt__") and earn_ts > now:
+                continue  # skip future dates
+            eps_est = _safe_float(row.get("EPS Estimate"))
+            eps_act = _safe_float(row.get("Reported EPS"))
+            surprise = _safe_float(row.get("Surprise(%)"))
+            beat = (
+                eps_act > eps_est
+                if not (pd.isna(eps_act) or pd.isna(eps_est))
+                else None
+            )
+            quarter_end = earn_ts.date() if hasattr(earn_ts, "date") else None
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "exchange": exchange,
+                    "collection_date": collection_date,
+                    "quarter_end": quarter_end,
+                    "eps_estimate": eps_est,
+                    "eps_actual": eps_act,
+                    "revenue_estimate": float("nan"),
+                    "revenue_actual": float("nan"),
+                    "eps_surprise_pct": surprise,
+                    "beat_eps": beat,
+                }
+            )
+    except Exception:
+        pass
+    return rows
+
+
 def main():
     run_date = datetime.now(timezone.utc).date()
     date_str = run_date.isoformat()
@@ -248,6 +445,9 @@ def main():
     pt_rows = []
     rec_rows = []
     earn_rows = []
+    profile_rows = []
+    inst_rows = []
+    hist_rows = []
     failed = 0
 
     for idx, symbol in enumerate(tickers):
@@ -264,11 +464,20 @@ def main():
         rec_rows.extend(_collect_recommendations(t, symbol, exchange, run_date))
         earn_rows.extend(_collect_earnings_dates(t, symbol, exchange, run_date))
 
+        profile = _collect_company_profile(t, symbol, exchange, run_date)
+        if profile:
+            profile_rows.append(profile)
+
+        inst_rows.extend(_collect_institutional_holders(t, symbol, exchange, run_date))
+        hist_rows.extend(_collect_earnings_history(t, symbol, exchange, run_date))
+
         time.sleep(BATCH_SLEEP_S)
 
         if (idx + 1) % 100 == 0:
             print(
-                f"    {idx+1}/{len(tickers)} — targets={len(pt_rows)} recs={len(rec_rows)} earnings={len(earn_rows)} failed={failed}"
+                f"    {idx+1}/{len(tickers)} — targets={len(pt_rows)} recs={len(rec_rows)} "
+                f"earnings={len(earn_rows)} profiles={len(profile_rows)} "
+                f"holders={len(inst_rows)} history={len(hist_rows)} failed={failed}"
             )
 
     # Write price targets
@@ -289,8 +498,27 @@ def main():
         write_parquet_to_s3(pd.DataFrame(earn_rows), key, EARN_SCHEMA)
         print(f"  Earnings dates: {len(earn_rows)} → {key}")
 
+    # Write company profiles
+    if profile_rows:
+        key = f"analyst/type=company_profiles/date={date_str}/exchange={exchange}/data.parquet"
+        write_parquet_to_s3(pd.DataFrame(profile_rows), key, PROFILE_SCHEMA)
+        print(f"  Company profiles: {len(profile_rows)} → {key}")
+
+    # Write institutional holders
+    if inst_rows:
+        key = f"analyst/type=institutional_holders/date={date_str}/exchange={exchange}/data.parquet"
+        write_parquet_to_s3(pd.DataFrame(inst_rows), key, INST_HOLDERS_SCHEMA)
+        print(f"  Institutional holders: {len(inst_rows)} → {key}")
+
+    # Write earnings history (beat/miss record)
+    if hist_rows:
+        key = f"analyst/type=earnings_history/date={date_str}/exchange={exchange}/data.parquet"
+        write_parquet_to_s3(pd.DataFrame(hist_rows), key, EARNINGS_HISTORY_SCHEMA)
+        print(f"  Earnings history: {len(hist_rows)} → {key}")
+
     print(
-        f"\n  DONE — targets={len(pt_rows)} recs={len(rec_rows)} earnings={len(earn_rows)} failed={failed}"
+        f"\n  DONE — targets={len(pt_rows)} recs={len(rec_rows)} earnings={len(earn_rows)} "
+        f"profiles={len(profile_rows)} holders={len(inst_rows)} history={len(hist_rows)} failed={failed}"
     )
 
 
