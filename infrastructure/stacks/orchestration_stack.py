@@ -307,12 +307,12 @@ class OrchestrationStack(cdk.Stack):
             description="Collect financial news every hour",
         )
 
-        # Weekend schedule — once on Saturday at 20:00 UTC
+        # Weekend schedule — once on Saturday and once on Sunday at 20:00 UTC
         scheduler.CfnSchedule(
             self,
             "NewsWeekendSchedule",
             name="market-data-news-weekend",
-            schedule_expression="cron(0 20 ? * SAT *)",
+            schedule_expression="cron(0 20 ? * SAT-SUN *)",
             flexible_time_window=scheduler.CfnSchedule.FlexibleTimeWindowProperty(
                 mode="OFF",
             ),
@@ -322,7 +322,7 @@ class OrchestrationStack(cdk.Stack):
                 input=json.dumps({"source": "eventbridge-scheduler-news-weekend"}),
             ),
             state="ENABLED",
-            description="Collect financial news once on Saturday at 20:00 UTC",
+            description="Collect financial news once daily on weekends at 20:00 UTC",
         )
 
         # ── Corporate Actions State Machine (daily) ───────────────────────────
@@ -920,12 +920,12 @@ class OrchestrationStack(cdk.Stack):
             description="Glue partition sync at 19:00 UTC weekdays",
         )
 
-        # Weekend: once on Saturday at 20:00 UTC
+        # Weekend: once on Saturday and once on Sunday at 20:00 UTC
         scheduler.CfnSchedule(
             self,
             "GlueSyncScheduleWeekend",
             name="market-data-glue-sync-weekend",
-            schedule_expression="cron(0 20 ? * SAT *)",
+            schedule_expression="cron(0 20 ? * SAT-SUN *)",
             flexible_time_window=scheduler.CfnSchedule.FlexibleTimeWindowProperty(
                 mode="OFF",
             ),
@@ -935,7 +935,7 @@ class OrchestrationStack(cdk.Stack):
                 input=json.dumps({"source": "eventbridge-glue-sync-weekend"}),
             ),
             state="ENABLED",
-            description="Glue partition sync once on Saturday 20:00 UTC",
+            description="Glue partition sync once daily on weekends at 20:00 UTC",
         )
 
         # ── Outputs ───────────────────────────────────────────────────────────
