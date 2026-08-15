@@ -48,8 +48,9 @@ def get_open_exchanges(now_utc: datetime | None = None) -> list[str]:
         if local_date_str in cfg.get("holidays", []):
             continue
 
-        # Skip weekends
-        if local_now.weekday() >= 5:
+        # Skip weekends (unless skip_weekends is explicitly False, e.g. CRYPTO)
+        skip_weekends = cfg.get("skip_weekends", True)
+        if skip_weekends and local_now.weekday() >= 5:
             continue
 
         open_h, open_m = map(int, cfg["open_time"].split(":"))
