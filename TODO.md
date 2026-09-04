@@ -107,3 +107,91 @@ Each Step Function:
 - `ecs/fundamentals/` — Fargate container for fundamentals
 - `ecs/insider_transactions/` — Fargate container with SEC EDGAR + yfinance
 - `run_local.py` — all local testing changes
+
+
+## Bloomberg-Level Features — Build Plan
+
+### Priority 1: New Data Sources (free, minimal effort)
+
+- [ ] **Yield curve & bonds** — add ^TNX, ^IRX, ^TYX, ^FVX to stock collection (just more yfinance tickers)
+- [ ] **Market indices** — add ^GSPC, ^VIX, ^IXIC, ^FTSE, ^GDAXI, ^N225 to stock collection
+- [ ] **Commodities** — add GC=F, CL=F, SI=F, ZC=F to stock collection
+- [ ] **Crypto** — add BTC-USD, ETH-USD, SOL-USD, ADA-USD to stock collection
+- [ ] **Forex** — add EURUSD=X, GBPUSD=X, JPYUSD=X, AUDUSD=X to stock collection
+- [ ] **Economic calendar (FRED API)** — new Lambda, pulls CPI, GDP, unemployment, fed funds rate (free API key)
+
+### Priority 2: Compute on Existing Data (no new sources needed)
+
+- [ ] **Technical indicators** — daily compute job on accumulated price data
+  - RSI (14-day), MACD (12/26/9), SMA (20/50/200), EMA, Bollinger Bands
+  - Stochastic Oscillator, ADX, ATR, OBV, VWAP
+  - Support/resistance levels, Fibonacci retracement
+- [ ] **Factor scoring** — per-stock score based on:
+  - Momentum (price change 1m/3m/6m/12m)
+  - Value (PE, PB, dividend yield vs sector median)
+  - Quality (ROE, debt/equity, earnings stability)
+  - Composite score: bullish / neutral / bearish
+- [ ] **Earnings quality scores**
+  - Altman Z-Score (bankruptcy risk from balance sheet)
+  - Beneish M-Score (earnings manipulation probability)
+  - Piotroski F-Score (financial strength)
+- [ ] **Correlation matrices** — stock vs stock, stock vs index (needs 30+ days of data)
+- [ ] **Beta calculation** — per stock vs S&P 500
+- [ ] **Sharpe ratio / Sortino ratio** — per stock risk-adjusted return
+
+### Priority 3: Alerts & Signals (built on existing data)
+
+- [ ] **Insider cluster alerts** — 3+ insiders buying same stock within 30 days
+- [ ] **Short squeeze candidates** — high short interest + rising price + volume spike
+- [ ] **Volume surge detection** — current volume > 2x avg_volume_30d
+- [ ] **Golden cross / death cross** — 50-day SMA crosses 200-day SMA
+- [ ] **RSI extremes** — overbought (>70) / oversold (<30)
+- [ ] **MACD crossover signals**
+- [ ] **Earnings surprise alerts** — actual EPS vs estimate > 10% deviation
+- [ ] **Price target breakthroughs** — stock exceeds analyst high target
+- [ ] **Morning briefing email** — Lambda + SNS, summarizes overnight movers, pre-market gaps, earnings today
+
+### Priority 4: Additional yfinance Data
+
+- [ ] **Options chains** — per-ticker collection (strike, IV, open interest, bid/ask)
+  - Put/call ratio as market sentiment indicator
+  - Unusual options activity detection
+- [ ] **ETF/Mutual Fund holdings** — top holdings, allocations, expense ratios
+- [ ] **Institutional holders** — which funds own which stocks, track changes over time
+- [ ] **ESG scores** — environmental, social, governance ratings
+- [ ] **Company profiles** — sector, industry, employee count, executives
+
+### Priority 5: Multi-factor Screener
+
+- [ ] **Athena-based screener** — query across all data to find stocks matching multiple criteria
+  - Example: PE < 15 AND revenue_growth > 20% AND insider_buying = true AND RSI < 30
+- [ ] **Pre-built screens** — value stocks, growth stocks, dividend aristocrats, turnaround plays
+- [ ] **Daily screener output** — S3 + email with top picks per strategy
+
+### Priority 6: Portfolio & Risk
+
+- [ ] **Portfolio tracker** — input holdings, calculate daily P&L, total return
+- [ ] **Value at Risk (VaR)** — 95% confidence loss estimate
+- [ ] **Monte Carlo simulation** — project portfolio outcomes over time
+- [ ] **Efficient frontier** — optimal portfolio allocation given risk tolerance
+- [ ] **Tax-loss harvesting signals** — identify positions with losses to realize
+
+### Priority 7: Dashboard & Delivery
+
+- [ ] **Interactive dashboard** — QuickSight or Grafana on top of Athena
+  - Watchlist with latest prices, sentiment, insider activity
+  - Sector heatmap
+  - Portfolio P&L chart
+- [ ] **API endpoint** — API Gateway + Lambda for external apps to query data
+- [ ] **Mobile push notifications** — SNS for signal triggers
+- [ ] **Custom watchlists** — configurable per user, stored in DynamoDB
+
+### Priority 8: Alternative Data (harder, some paid)
+
+- [ ] **Social sentiment velocity** — Reddit mention frequency per ticker (already have RSS)
+- [ ] **Web traffic trends** — SimilarWeb/SEMrush data (paid)
+- [ ] **Job postings analysis** — LinkedIn/Indeed scraping (complex)
+- [ ] **Patent filings** — USPTO bulk data (free but complex parsing)
+- [ ] **Supply chain mapping** — who supplies whom (paid databases)
+- [ ] **Satellite/geolocation data** — parking lot counts, shipping (very expensive)
+- [ ] **Credit ratings** — Moody's/S&P (paid, no free source)

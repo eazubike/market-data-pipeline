@@ -48,3 +48,24 @@ app.include_router(screener.router, prefix="/api/screener", tags=["Screener"])
 @app.get("/api/health")
 def health_check():
     return {"status": "ok", "service": "marketpulse-api"}
+
+
+@app.get("/api/debug/athena")
+async def debug_athena():
+    """Test Athena connectivity with a simple query."""
+    from api.services.athena_client import (
+        query_athena,
+        GLUE_DATABASE,
+        ATHENA_OUTPUT,
+        DATA_BUCKET,
+    )
+
+    result = await query_athena("SELECT symbol, price FROM stocks LIMIT 3")
+    return {
+        "result": result,
+        "config": {
+            "GLUE_DATABASE": GLUE_DATABASE,
+            "DATA_BUCKET": DATA_BUCKET,
+            "ATHENA_OUTPUT": ATHENA_OUTPUT,
+        },
+    }

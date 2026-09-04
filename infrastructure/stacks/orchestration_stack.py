@@ -293,11 +293,11 @@ class OrchestrationStack(cdk.Stack):
         scheduler.CfnSchedule(
             self,
             "NewsWeekdaySchedule",
-            name="market-data-news-weekday-1h",
-            schedule_expression="rate(1 hour)",
+            name="market-data-news-4h",
+            schedule_expression="rate(4 hours)",
             flexible_time_window=scheduler.CfnSchedule.FlexibleTimeWindowProperty(
                 mode="FLEXIBLE",
-                maximum_window_in_minutes=5,
+                maximum_window_in_minutes=30,
             ),
             target=scheduler.CfnSchedule.TargetProperty(
                 arn=news_state_machine.state_machine_arn,
@@ -305,15 +305,15 @@ class OrchestrationStack(cdk.Stack):
                 input=json.dumps({"source": "eventbridge-scheduler-news-weekday"}),
             ),
             state="ENABLED",
-            description="Collect financial news every hour",
+            description="Collect financial news every 4 hours",
         )
 
-        # Weekend schedule — once on Saturday and once on Sunday at 20:00 UTC
+        # Weekend schedule — every 4 hours Sat-Sun
         scheduler.CfnSchedule(
             self,
             "NewsWeekendSchedule",
             name="market-data-news-weekend",
-            schedule_expression="cron(0 20 ? * SAT-SUN *)",
+            schedule_expression="rate(4 hours)",
             flexible_time_window=scheduler.CfnSchedule.FlexibleTimeWindowProperty(
                 mode="OFF",
             ),
@@ -323,7 +323,7 @@ class OrchestrationStack(cdk.Stack):
                 input=json.dumps({"source": "eventbridge-scheduler-news-weekend"}),
             ),
             state="ENABLED",
-            description="Collect financial news once daily on weekends at 20:00 UTC",
+            description="Collect financial news every 4 hours on weekends",
         )
 
         # ── Corporate Actions State Machine (daily) ───────────────────────────

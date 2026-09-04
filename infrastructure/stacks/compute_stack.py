@@ -100,7 +100,7 @@ class ComputeStack(cdk.Stack):
             handler="handler.lambda_handler",
             code=lambda_.Code.from_asset(f"{LAMBDAS_PATH}/collect_stocks"),
             layers=all_layers,
-            memory_size=768,
+            memory_size=512,
             timeout=cdk.Duration.minutes(15),
             environment={**common_env},
         )
@@ -189,7 +189,7 @@ class ComputeStack(cdk.Stack):
             handler="handler.lambda_handler",
             code=lambda_.Code.from_asset(f"{LAMBDAS_PATH}/collect_corporate_actions"),
             layers=all_layers,
-            memory_size=512,
+            memory_size=256,
             timeout=cdk.Duration.minutes(15),
             environment={**common_env},
         )
@@ -239,7 +239,7 @@ class ComputeStack(cdk.Stack):
             handler="handler.lambda_handler",
             code=lambda_.Code.from_asset(f"{LAMBDAS_PATH}/collect_analyst_data"),
             layers=all_layers,
-            memory_size=512,
+            memory_size=256,
             timeout=cdk.Duration.minutes(15),
             environment={**common_env},
         )
@@ -261,7 +261,7 @@ class ComputeStack(cdk.Stack):
             handler="handler.lambda_handler",
             code=lambda_.Code.from_asset(f"{LAMBDAS_PATH}/collect_financials"),
             layers=all_layers,
-            memory_size=1024,
+            memory_size=256,
             timeout=cdk.Duration.minutes(15),
             environment={**common_env},
         )
@@ -335,7 +335,7 @@ class ComputeStack(cdk.Stack):
             )
         )
 
-        # ── refresh-tickers (daily before market open) ─────────────────────────
+        # ── refresh-tickers (weekly on Monday before market open) ─────────────
         self.refresh_tickers_fn = lambda_.Function(
             self,
             "RefreshTickers",
@@ -344,23 +344,23 @@ class ComputeStack(cdk.Stack):
             handler="handler.lambda_handler",
             code=lambda_.Code.from_asset(f"{LAMBDAS_PATH}/refresh_tickers"),
             layers=all_layers,
-            memory_size=512,
+            memory_size=256,
             timeout=cdk.Duration.minutes(5),
             environment={**common_env},
         )
         data_bucket.grant_read_write(self.refresh_tickers_fn, "config/tickers/*")
 
-        # Schedule: run daily at 12:00 UTC (before any market opens)
+        # Schedule: run weekly on Monday at 12:00 UTC
         events.Rule(
             self,
             "RefreshTickersSchedule",
-            rule_name="market-data-refresh-tickers-daily",
+            rule_name="market-data-refresh-tickers-weekly",
             schedule=events.Schedule.cron(
                 hour="12",
                 minute="0",
-                week_day="MON-FRI",
+                week_day="MON",
             ),
-            description="Refresh all exchange ticker lists daily before market open",
+            description="Refresh all exchange ticker lists every Monday before market open",
             targets=[events_targets.LambdaFunction(self.refresh_tickers_fn)],
         )
 
