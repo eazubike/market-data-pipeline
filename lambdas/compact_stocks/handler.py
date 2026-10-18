@@ -94,26 +94,38 @@ def lambda_handler(event: dict, context: LambdaContext) -> dict:
     # Try to find stock results in various event shapes
     prefixes: list[str] = []
 
+    def _collect(item: object) -> None:
+        """Pull stocks_s3_prefix out of a Map item, unwrapping LambdaInvoke output."""
+        if not isinstance(item, dict):
+            return
+        if item.get("stocks_s3_prefix"):
+            prefixes.append(item["stocks_s3_prefix"])
+            return
+        payload = item.get("stock_result", {}).get("Payload")
+        if isinstance(payload, dict) and payload.get("stocks_s3_prefix"):
+            prefixes.append(payload["stocks_s3_prefix"])
+
     # Shape 1: direct list of results from Map
     if isinstance(event, list):
         for item in event:
-            if isinstance(item, dict) and item.get("stocks_s3_prefix"):
-                prefixes.append(item["stocks_s3_prefix"])
-    # Shape 2: nested in parallel_results
+            _collect(item)
+    # Shape 2: nested in parallel_results. Each branch output is either a list
+    # of Map items or the full state dict containing "stocks_results".
     elif "parallel_results" in event:
         for branch in event["parallel_results"]:
             if isinstance(branch, list):
                 for item in branch:
-                    if isinstance(item, dict) and item.get("stocks_s3_prefix"):
-                        prefixes.append(item["stocks_s3_prefix"])
+                    _collect(item)
+            elif isinstance(branch, dict):
+                for item in branch.get("stocks_results", []):
+                    _collect(item)
     # Shape 3: stocks_results directly
     elif "stocks_results" in event:
         for item in event["stocks_results"]:
-            if isinstance(item, dict):
-                # The stock_result is nested one more level from LambdaInvoke
-                result = item.get("stock_result", {}).get("Payload", item)
-                if result.get("stocks_s3_prefix"):
-                    prefixes.append(result["stocks_s3_prefix"])
+            _collect(item)
+
+    # Chunks of the same exchange share one prefix — compact each only once.
+    prefixes = list(dict.fromkeys(prefixes))
 
     logger.info("Starting compaction", extra={"prefixes_found": len(prefixes)})
 

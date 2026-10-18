@@ -14,7 +14,9 @@ Input:
     {
       "exchange": "NASDAQ",
       "run_timestamp": "2026-07-24T14:30:00Z",
-      "date": "2026-07-24"
+      "date": "2026-07-24",
+      "offset": 0,      (optional) first ticker index of this chunk
+      "limit": 400      (optional) number of tickers in this chunk
     }
 
 Output:
@@ -53,8 +55,11 @@ metrics = Metrics(namespace="MarketData")
 
 BATCH_SIZE = 50
 BATCH_SLEEP_S = 0.5
-MAX_RETRY = 3
-RETRY_BASE_S = 5
+MAX_RETRY = 2
+RETRY_BASE_S = 3
+# Stop starting new batches when less than this much time is left, so the
+# invocation returns normally (partial data already in S3) instead of timing out.
+MIN_REMAINING_MS = 45_000
 
 
 # ── Parquet schema ─────────────────────────────────────────────────────────────
@@ -154,6 +159,14 @@ def lambda_handler(event: dict, context: LambdaContext) -> dict:
     currency = exchanges_config.get(exchange, {}).get("currency", "")
 
     tickers = load_tickers(exchange)
+
+    # Chunk support: process only [offset, offset+limit) of the exchange.
+    offset: int = int(event.get("offset", 0) or 0)
+    limit = event.get("limit")
+    if limit:
+        tickers = tickers[offset : offset + int(limit)]
+    elif offset:
+        tickers = tickers[offset:]
     if not tickers:
         logger.warning("No tickers found for exchange", extra={"exchange": exchange})
         return {
@@ -176,8 +189,20 @@ def lambda_handler(event: dict, context: LambdaContext) -> dict:
     batches_written = 0
 
     batches = [tickers[i : i + BATCH_SIZE] for i in range(0, len(tickers), BATCH_SIZE)]
+    # Global batch numbering keeps file names unique across chunks that share
+    # the same S3 prefix (offset is a multiple of BATCH_SIZE).
+    first_batch_no = offset // BATCH_SIZE
+    incomplete = False
 
     for batch_idx, batch in enumerate(batches):
+        if context.get_remaining_time_in_millis() < MIN_REMAINING_MS:
+            incomplete = True
+            logger.warning(
+                "Low remaining time, stopping early",
+                extra={"exchange": exchange, "next_batch": batch_idx, "of": len(batches)},
+            )
+            break
+
         df = _fetch_batch_with_retry(batch)
 
         batch_rows: list[dict] = []
@@ -206,7 +231,7 @@ def lambda_handler(event: dict, context: LambdaContext) -> dict:
         # Write this batch to S3 immediately
         if batch_rows:
             batch_df = pd.DataFrame(batch_rows)
-            batch_key = f"{s3_prefix}batch_{batch_idx+1:04d}.parquet"
+            batch_key = f"{s3_prefix}batch_{first_batch_no + batch_idx + 1:04d}.parquet"
             write_parquet(batch_df, batch_key, schema=STOCKS_SCHEMA)
             batches_written += 1
 
@@ -235,4 +260,5 @@ def lambda_handler(event: dict, context: LambdaContext) -> dict:
         "tickers_ok": tickers_ok,
         "tickers_failed": tickers_failed,
         "stocks_s3_prefix": s3_prefix,
+        "incomplete": incomplete,
     }

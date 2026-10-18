@@ -86,7 +86,7 @@ class ComputeStack(cdk.Stack):
             code=lambda_.Code.from_asset(f"{LAMBDAS_PATH}/check_market_hours"),
             layers=all_layers,
             memory_size=256,
-            timeout=cdk.Duration.minutes(15),
+            timeout=cdk.Duration.seconds(60),
             environment={**common_env},
         )
         data_bucket.grant_read(self.check_market_hours_fn, "config/*")
@@ -101,7 +101,7 @@ class ComputeStack(cdk.Stack):
             code=lambda_.Code.from_asset(f"{LAMBDAS_PATH}/collect_stocks"),
             layers=all_layers,
             memory_size=512,
-            timeout=cdk.Duration.minutes(15),
+            timeout=cdk.Duration.minutes(5),  # ~400-ticker chunks finish in 1-2 min
             environment={**common_env},
         )
         data_bucket.grant_read(self.collect_stocks_fn, "config/*")
@@ -123,7 +123,7 @@ class ComputeStack(cdk.Stack):
             code=lambda_.Code.from_asset(f"{LAMBDAS_PATH}/compact_stocks"),
             layers=all_layers,
             memory_size=256,
-            timeout=cdk.Duration.minutes(15),
+            timeout=cdk.Duration.minutes(5),
             environment={**common_env},
         )
         data_bucket.grant_read_write(self.compact_stocks_fn, "stocks/*")

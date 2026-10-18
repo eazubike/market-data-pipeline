@@ -65,7 +65,10 @@ class OrchestrationStack(cdk.Stack):
             "CheckMarketHours",
             lambda_function=check_market_hours_fn,
             payload=sfn.TaskInput.from_json_path_at("$"),
-            result_selector={"open_exchanges.$": "$.Payload.open_exchanges"},
+            result_selector={
+                "open_exchanges.$": "$.Payload.open_exchanges",
+                "chunks.$": "$.Payload.chunks",
+            },
             result_path="$.market_check",
             retry_on_service_exceptions=True,
         )
@@ -83,21 +86,26 @@ class OrchestrationStack(cdk.Stack):
             result_path="$.stock_result",
             retry_on_service_exceptions=False,
         )
+        # Retry once only. A chunk is ~400 tickers, so a retry is cheap (the old
+        # per-exchange retry re-ran thousands of tickers up to 3 more times).
         collect_stocks_job.add_retry(
             errors=["States.TaskFailed", "Lambda.ServiceException"],
             interval=cdk.Duration.seconds(5),
-            max_attempts=3,
+            max_attempts=1,
             backoff_rate=2.0,
         )
 
+        # One Map item per ticker chunk (planned by check-market-hours)
         collect_stocks_map = sfn.Map(
             self,
             "CollectStocksPerExchange",
-            items_path="$.market_check.open_exchanges",
+            items_path="$.market_check.chunks",
             max_concurrency=10,
             result_path="$.stocks_results",
             parameters={
-                "exchange.$": "$$.Map.Item.Value",
+                "exchange.$": "$$.Map.Item.Value.exchange",
+                "offset.$": "$$.Map.Item.Value.offset",
+                "limit.$": "$$.Map.Item.Value.limit",
                 "run_timestamp.$": "$$.Execution.StartTime",
                 "date.$": "$$.Execution.StartTime",
             },
