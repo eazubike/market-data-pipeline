@@ -185,7 +185,9 @@ class OrchestrationStack(cdk.Stack):
             self,
             "MarketDataSchedule",
             name="market-data-hourly",
-            schedule_expression="rate(1 hour)",
+            # Every 2 hours during global market hours (covers all 11 exchanges)
+            # 01:00 = TSE/HKEX open, 09:00 = LSE/EU open, 14:00 = US open, 21:00 = US close + 90min lookback
+            schedule_expression="cron(0 1,3,9,11,13,15,17,19,21 ? * MON-FRI *)",
             flexible_time_window=scheduler.CfnSchedule.FlexibleTimeWindowProperty(
                 mode="FLEXIBLE",
                 maximum_window_in_minutes=5,
@@ -196,7 +198,7 @@ class OrchestrationStack(cdk.Stack):
                 input=json.dumps({"source": "eventbridge-scheduler"}),
             ),
             state="ENABLED",
-            description="Trigger market data collection every hour",
+            description="Trigger market data collection covering all global market hours",
         )
 
         # ── CloudWatch Alarms ─────────────────────────────────────────────────
