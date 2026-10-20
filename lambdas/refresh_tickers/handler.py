@@ -6,15 +6,13 @@ uploads them to S3. Runs once daily before market open.
 
 Sources:
   - NASDAQ/NYSE: NASDAQ screener API (full listings)
-  - LSE: Official LSE SETS securities XLS
-  - XETRA: companiesmarketcap.com Germany
-  - Euronext Paris: companiesmarketcap.com France
-  - Euronext Amsterdam: companiesmarketcap.com Netherlands
-  - Euronext Brussels: companiesmarketcap.com Belgium
-  - Euronext Lisbon: companiesmarketcap.com Portugal
-  - Borsa Italiana: companiesmarketcap.com Italy
-  - TSE: JPX official XLS
-  - HKEX: HKEX official XLSX
+  - LSE: Yahoo Finance equity screener (the official SETS XLS stopped updating in 2020)
+  - XETRA: companiesmarketcap.com Germany (Yahoo's German venues also list
+    thousands of foreign stocks, which would duplicate US/other exchanges)
+  - Euronext Paris/Amsterdam/Brussels/Lisbon, Borsa Italiana, TSE: Yahoo Finance
+    equity screener (companiesmarketcap only listed the largest companies and
+    its NL/PT pages and the JPX file now 404)
+  - HKEX: HKEX official XLSX (equities + REITs)
 
 Input: {} (no parameters needed)
 Output: { "exchanges_updated": [...], "total_tickers": 12345 }
@@ -28,9 +26,13 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared"))
 
+import time
+
 import boto3
 import pandas as pd
 import requests
+import yfinance as yf
+from yfinance import EquityQuery
 
 from aws_lambda_powertools import Logger
 from aws_lambda_powertools.utilities.typing import LambdaContext
@@ -40,6 +42,10 @@ logger = Logger()
 DATA_BUCKET = os.environ["DATA_BUCKET"]
 H = {"User-Agent": "Mozilla/5.0"}
 s3 = boto3.client("s3")
+
+# Refuse to replace a list with one less than this fraction of its current size,
+# so a broken or truncated source can't silently wipe out an exchange.
+MIN_KEEP_RATIO = 0.5
 
 
 # ── Upload helper ─────────────────────────────────────────────────────────────
@@ -56,6 +62,16 @@ def _upload_tickers(exchange: str, tickers: list[str]) -> int:
     return len(tickers)
 
 
+def _existing_count(exchange: str) -> int:
+    """Number of tickers in the current S3 list (0 if none)."""
+    try:
+        resp = s3.get_object(Bucket=DATA_BUCKET, Key=f"config/tickers/{exchange}.csv")
+    except s3.exceptions.NoSuchKey:
+        return 0
+    lines = resp["Body"].read().decode("utf-8").splitlines()[1:]
+    return sum(1 for line in lines if line.split(",")[0].strip())
+
+
 # ── Fetchers ──────────────────────────────────────────────────────────────────
 
 def _fetch_nasdaq_api(exchange_name: str) -> list[str]:
@@ -70,17 +86,37 @@ def _fetch_nasdaq_api(exchange_name: str) -> list[str]:
     return [row["symbol"] for row in r.json()["data"]["rows"] if row.get("symbol")]
 
 
-def _fetch_lse_xls() -> list[str]:
-    """LSE: official SETS securities list."""
-    r = requests.get(
-        "https://docs.londonstockexchange.com/sites/default/files/documents/List%20of%20SETS%20securities_0.xls",
-        headers=H,
-        timeout=30,
+def _fetch_yahoo_screener(exchange_code: str, region: str) -> list[str]:
+    """
+    All equities Yahoo lists for an exchange, already in Yahoo symbol format.
+    Keeps only listings with a market cap and recent volume, which drops
+    preference shares and foreign stocks cross-traded on the exchange.
+    """
+    # The market-cap condition server-side keeps paging small (Milan alone lists
+    # ~31k certificates/warrants with no market cap).
+    query = EquityQuery(
+        "and",
+        [
+            EquityQuery("eq", ["exchange", exchange_code]),
+            EquityQuery("eq", ["region", region]),
+            EquityQuery("gt", ["intradaymarketcap", 0]),
+        ],
     )
-    r.raise_for_status()
-    df = pd.read_excel(io.BytesIO(r.content), skiprows=3)
-    df = df.dropna(subset=["Mnemonic"])
-    return [str(m).strip() + ".L" for m in df["Mnemonic"]]
+    tickers: list[str] = []
+    offset = 0
+    while True:
+        resp = yf.screen(query, offset=offset, size=250, sortField="intradaymarketcap", sortAsc=False)
+        quotes = resp.get("quotes", [])
+        tickers += [
+            q["symbol"]
+            for q in quotes
+            if (q.get("marketCap") or 0) > 0 and (q.get("averageDailyVolume3Month") or 0) > 0
+        ]
+        offset += len(quotes)
+        if not quotes or offset >= resp.get("total", 0):
+            break
+        time.sleep(0.5)
+    return list(dict.fromkeys(tickers))
 
 
 def _fetch_companiesmarketcap(country: str, suffix: str) -> list[str]:
@@ -101,19 +137,6 @@ def _fetch_companiesmarketcap(country: str, suffix: str) -> list[str]:
     return tickers
 
 
-def _fetch_jpx() -> list[str]:
-    """TSE: JPX official XLS, domestic equities only."""
-    r = requests.get(
-        "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls",
-        headers=H,
-        timeout=30,
-    )
-    r.raise_for_status()
-    df = pd.read_excel(io.BytesIO(r.content))
-    equities = df[df["市場・商品区分"].str.contains("内国株式", na=False)]
-    return [str(c).strip() + ".T" for c in equities["コード"]]
-
-
 def _fetch_hkex() -> list[str]:
     """HKEX: official securities list XLSX."""
     r = requests.get(
@@ -123,7 +146,7 @@ def _fetch_hkex() -> list[str]:
     )
     r.raise_for_status()
     df = pd.read_excel(io.BytesIO(r.content), skiprows=2)
-    equities = df[df["Category"] == "Equity"]
+    equities = df[df["Category"].isin(["Equity", "Real Estate Investment Trusts"])]
     return [
         str(int(c)).zfill(4) + ".HK"
         for c in equities["Stock Code"]
@@ -136,14 +159,14 @@ def _fetch_hkex() -> list[str]:
 EXCHANGE_SOURCES = [
     ("NASDAQ",         lambda: _fetch_nasdaq_api("NASDAQ")),
     ("NYSE",           lambda: _fetch_nasdaq_api("NYSE")),
-    ("LSE",            _fetch_lse_xls),
+    ("LSE",            lambda: _fetch_yahoo_screener("LSE", "gb")),
     ("XETRA",         lambda: _fetch_companiesmarketcap("germany", ".DE")),
-    ("EURONEXT",       lambda: _fetch_companiesmarketcap("france", ".PA")),
-    ("EURONEXT_AMS",   lambda: _fetch_companiesmarketcap("the-netherlands", ".AS")),
-    ("EURONEXT_BRU",   lambda: _fetch_companiesmarketcap("belgium", ".BR")),
-    ("EURONEXT_LIS",   lambda: _fetch_companiesmarketcap("portugal", ".LS")),
-    ("BORSA_ITALIANA", lambda: _fetch_companiesmarketcap("italy", ".MI")),
-    ("TSE",            _fetch_jpx),
+    ("EURONEXT",       lambda: _fetch_yahoo_screener("PAR", "fr")),
+    ("EURONEXT_AMS",   lambda: _fetch_yahoo_screener("AMS", "nl")),
+    ("EURONEXT_BRU",   lambda: _fetch_yahoo_screener("BRU", "be")),
+    ("EURONEXT_LIS",   lambda: _fetch_yahoo_screener("LIS", "pt")),
+    ("BORSA_ITALIANA", lambda: _fetch_yahoo_screener("MIL", "it")),
+    ("TSE",            lambda: _fetch_yahoo_screener("JPX", "jp")),
     ("HKEX",           _fetch_hkex),
 ]
 
@@ -158,7 +181,13 @@ def lambda_handler(event: dict, context: LambdaContext) -> dict:
     for exchange, fetcher in EXCHANGE_SOURCES:
         try:
             tickers = fetcher()
-            if tickers:
+            existing = _existing_count(exchange)
+            if tickers and len(tickers) < existing * MIN_KEEP_RATIO:
+                logger.error(
+                    "Refusing to shrink ticker list, keeping current one",
+                    extra={"exchange": exchange, "fetched": len(tickers), "existing": existing},
+                )
+            elif tickers:
                 count = _upload_tickers(exchange, tickers)
                 exchanges_updated.append(exchange)
                 total_tickers += count
