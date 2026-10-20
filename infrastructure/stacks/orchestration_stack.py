@@ -94,6 +94,14 @@ class OrchestrationStack(cdk.Stack):
             max_attempts=1,
             backoff_rate=2.0,
         )
+        # A chunk that still fails is recorded and skipped, so it can't abort
+        # the other chunks or stop compaction of the data that did land.
+        chunk_failed = sfn.Pass(self, "ChunkFailed")
+        collect_stocks_job.add_catch(
+            chunk_failed,
+            errors=["States.ALL"],
+            result_path="$.chunk_error",
+        )
 
         # One Map item per ticker chunk (planned by check-market-hours)
         collect_stocks_map = sfn.Map(
@@ -138,8 +146,9 @@ class OrchestrationStack(cdk.Stack):
             lambda_function=emit_metrics_fn,
             payload=sfn.TaskInput.from_object(
                 {
-                    "error.$": "$.Error",
-                    "cause.$": "$.Cause",
+                    # add_catch below stores the error object at $.error
+                    "error.$": "$.error.Error",
+                    "cause.$": "$.error.Cause",
                     "run_timestamp.$": "$$.Execution.StartTime",
                     "status": "FAILED",
                 }

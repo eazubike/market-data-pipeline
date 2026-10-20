@@ -30,11 +30,15 @@ Output:
 
 from __future__ import annotations
 
+import gc
 import io
 import os
+import resource
 import sys
 import time
 import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeout
 from datetime import datetime, timezone
 from typing import Any
 
@@ -42,6 +46,7 @@ import boto3
 import pandas as pd
 import pyarrow as pa
 import yfinance as yf
+from yfinance.exceptions import YFRateLimitError
 
 from aws_lambda_powertools import Logger, Metrics
 from aws_lambda_powertools.metrics import MetricUnit
@@ -57,6 +62,11 @@ BATCH_SIZE = 50
 BATCH_SLEEP_S = 0.5
 MAX_RETRY = 2
 RETRY_BASE_S = 3
+# Per-ticker fetches run on our own pool instead of yf.download(threads=True),
+# whose wait loop has no timeout and hung whole invocations until Lambda killed them.
+FETCH_WORKERS = 4  # ~old per-Lambda request rate; 8 tripped Yahoo's rate limit in testing
+TICKER_TIMEOUT_S = 10  # per HTTP request
+BATCH_DEADLINE_S = 60  # hard cap for one 50-ticker batch; stragglers are abandoned
 # Stop starting new batches when less than this much time is left, so the
 # invocation returns normally (partial data already in S3) instead of timing out.
 MIN_REMAINING_MS = 45_000
@@ -83,46 +93,100 @@ STOCKS_SCHEMA = pa.schema(
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 
-def _fetch_batch_with_retry(tickers: list[str]) -> pd.DataFrame | None:
-    """Download 1-day 30-minute bars for a batch of tickers with retry on 429."""
-    ticker_str = " ".join(tickers)
-    for attempt in range(MAX_RETRY):
+def _yahoo_symbol(ticker: str) -> str:
+    """Map exchange-style symbols to Yahoo's: 'BRK/A' → 'BRK-A', 'TRTN^A' → 'TRTN-PA'."""
+    if "^" in ticker:
+        base, cls = ticker.split("^", 1)
+        return f"{base}-P{cls}"
+    return ticker.replace("/", "-")
+
+
+def _fetch_one(ticker: str) -> pd.DataFrame:
+    return yf.Ticker(_yahoo_symbol(ticker)).history(
+        period="1d",
+        interval="30m",
+        auto_adjust=True,
+        timeout=TICKER_TIMEOUT_S,
+        raise_errors=True,
+    )
+
+
+def _fetch_batch(
+    tickers: list[str], deadline_s: float
+) -> tuple[dict[str, pd.DataFrame], dict[str, str]]:
+    """
+    Fetch 1-day 30-minute bars for each ticker concurrently, never waiting past
+    deadline_s. Rate-limited tickers are retried with backoff.
+
+    Returns (frames by ticker, error by failed ticker).
+    """
+    frames: dict[str, pd.DataFrame] = {}
+    errors: dict[str, str] = {}
+    pending = list(tickers)
+    deadline = time.monotonic() + deadline_s
+
+    for attempt in range(MAX_RETRY + 1):
+        rate_limited: list[str] = []
+        pool = ThreadPoolExecutor(max_workers=FETCH_WORKERS)
+        futures = {pool.submit(_fetch_one, t): t for t in pending}
         try:
-            df = yf.download(
-                ticker_str,
-                period="1d",
-                interval="30m",
-                group_by="ticker",
-                auto_adjust=True,
-                progress=False,
-                threads=True,
+            for fut in as_completed(futures, timeout=max(deadline - time.monotonic(), 0)):
+                ticker = futures[fut]
+                try:
+                    frames[ticker] = fut.result()
+                except YFRateLimitError:
+                    rate_limited.append(ticker)
+                except Exception as exc:
+                    errors[ticker] = type(exc).__name__
+        except FuturesTimeout:
+            for fut, ticker in futures.items():
+                if not fut.done():
+                    errors[ticker] = "BatchDeadline"
+            logger.warning(
+                "Batch deadline hit, abandoning slow tickers",
+                extra={"abandoned": sum(1 for f in futures if not f.done())},
             )
-            return df
-        except Exception as exc:
-            err_str = str(exc).lower()
-            if "429" in err_str or "rate" in err_str:
-                sleep_s = RETRY_BASE_S * (2**attempt) + random.uniform(0, 3)
-                logger.warning(
-                    "Rate limited by Yahoo Finance, backing off",
-                    extra={"attempt": attempt + 1, "sleep_s": sleep_s},
-                )
-                time.sleep(sleep_s)
-            else:
-                logger.error("yfinance download error", extra={"error": str(exc)})
-                return None
-    return None
+            rate_limited = []
+        finally:
+            # Don't block on stragglers; each request ends on its own HTTP timeout.
+            pool.shutdown(wait=False, cancel_futures=True)
+
+        if not rate_limited:
+            break
+        sleep_s = RETRY_BASE_S * (2**attempt) + random.uniform(0, 3)
+        if attempt == MAX_RETRY or time.monotonic() + sleep_s >= deadline:
+            errors.update({t: "YFRateLimitError" for t in rate_limited})
+            break
+        logger.warning(
+            "Rate limited by Yahoo Finance, backing off",
+            extra={"attempt": attempt + 1, "tickers": len(rate_limited), "sleep_s": sleep_s},
+        )
+        time.sleep(sleep_s)
+        pending = rate_limited
+
+    return frames, errors
 
 
-def _extract_latest_row(df: pd.DataFrame, ticker: str) -> dict | None:
-    """Pull the most recent bar for a single ticker from a multi-ticker df."""
+def _memory_mb() -> tuple[float, float]:
+    """(current RSS, peak RSS) of this process in MB."""
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024  # KB on Linux
     try:
-        if isinstance(df.columns, pd.MultiIndex):
-            ticker_df = df[ticker].dropna(how="all")
-        else:
-            ticker_df = df.dropna(how="all")
+        with open("/proc/self/statm") as f:
+            current = int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") / 1024**2
+    except OSError:
+        current = -1.0
+    return round(current, 1), round(peak, 1)
+
+
+def _extract_latest_row(ticker_df: pd.DataFrame) -> dict | None:
+    """Pull the most recent bar from a single ticker's history df."""
+    try:
+        ticker_df = ticker_df.dropna(how="all")
         if ticker_df.empty:
             return None
         row = ticker_df.iloc[-1]
+        ts = pd.Timestamp(ticker_df.index[-1])
+        ts = ts.tz_convert("UTC") if ts.tzinfo else ts.tz_localize("UTC")
         return {
             "price": float(row.get("Close", row.get("close", float("nan")))),
             "open": float(row.get("Open", row.get("open", float("nan")))),
@@ -130,9 +194,7 @@ def _extract_latest_row(df: pd.DataFrame, ticker: str) -> dict | None:
             "low": float(row.get("Low", row.get("low", float("nan")))),
             "close": float(row.get("Close", row.get("close", float("nan")))),
             "volume": int(row.get("Volume", row.get("volume", 0))),
-            "timestamp": ticker_df.index[-1]
-            .to_pydatetime()
-            .replace(tzinfo=timezone.utc),
+            "timestamp": ts.to_pydatetime(),
         }
     except Exception:
         return None
@@ -203,11 +265,17 @@ def lambda_handler(event: dict, context: LambdaContext) -> dict:
             )
             break
 
-        df = _fetch_batch_with_retry(batch)
+        batch_started = time.monotonic()
+        # Leave ~20s after the batch for the S3 write and a clean return.
+        deadline_s = min(
+            BATCH_DEADLINE_S, context.get_remaining_time_in_millis() / 1000 - 20
+        )
+        frames, errors = _fetch_batch(batch, deadline_s)
 
         batch_rows: list[dict] = []
         for ticker in batch:
-            row = _extract_latest_row(df, ticker) if df is not None else None
+            df = frames.get(ticker)
+            row = _extract_latest_row(df) if df is not None else None
             if row is None:
                 tickers_failed += 1
                 continue
@@ -234,6 +302,24 @@ def lambda_handler(event: dict, context: LambdaContext) -> dict:
             batch_key = f"{s3_prefix}batch_{first_batch_no + batch_idx + 1:04d}.parquet"
             write_parquet(batch_df, batch_key, schema=STOCKS_SCHEMA)
             batches_written += 1
+
+        batch_ok = len(batch_rows)
+        del frames, batch_rows
+        gc.collect()
+        rss_mb, peak_mb = _memory_mb()
+        logger.info(
+            "Batch complete",
+            extra={
+                "exchange": exchange,
+                "batch": first_batch_no + batch_idx + 1,
+                "duration_s": round(time.monotonic() - batch_started, 1),
+                "ok": batch_ok,
+                "failed": len(batch) - batch_ok,
+                "failed_sample": dict(list(errors.items())[:10]),
+                "rss_mb": rss_mb,
+                "peak_rss_mb": peak_mb,
+            },
+        )
 
         # Respect rate limits between batches
         if batch_idx < len(batches) - 1:

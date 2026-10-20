@@ -100,7 +100,7 @@ class ComputeStack(cdk.Stack):
             handler="handler.lambda_handler",
             code=lambda_.Code.from_asset(f"{LAMBDAS_PATH}/collect_stocks"),
             layers=all_layers,
-            memory_size=512,
+            memory_size=768,  # full-load peak was 446 MB; 512 left too little headroom
             timeout=cdk.Duration.minutes(5),  # ~400-ticker chunks finish in 1-2 min
             environment={**common_env},
         )
