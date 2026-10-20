@@ -5,10 +5,12 @@ Refreshes ticker lists for all exchanges from live public sources and
 uploads them to S3. Runs once daily before market open.
 
 Sources:
-  - NASDAQ/NYSE: NASDAQ screener API (full listings)
+  - NASDAQ/NYSE: NASDAQ screener API (full listings; NASDAQ drops SPAC
+    warrants/units/rights)
   - LSE: Yahoo Finance equity screener (the official SETS XLS stopped updating in 2020)
-  - XETRA: companiesmarketcap.com Germany (Yahoo's German venues also list
-    thousands of foreign stocks, which would duplicate US/other exchanges)
+  - XETRA: Deutsche Börse official listed-companies XLSX (Prime, General, Scale,
+    Basic Board) plus companiesmarketcap.com Germany. Not Yahoo's screener: its
+    German venues also list thousands of foreign stocks (NVD.DE = Nvidia).
   - Euronext Paris/Amsterdam/Brussels/Lisbon, Borsa Italiana, TSE: Yahoo Finance
     equity screener (companiesmarketcap only listed the largest companies and
     its NL/PT pages and the JPX file now 404)
@@ -22,7 +24,9 @@ from __future__ import annotations
 import csv
 import io
 import os
+import re
 import sys
+from urllib.parse import urljoin
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared"))
 
@@ -74,7 +78,12 @@ def _existing_count(exchange: str) -> int:
 
 # ── Fetchers ──────────────────────────────────────────────────────────────────
 
-def _fetch_nasdaq_api(exchange_name: str) -> list[str]:
+def _is_nasdaq_spac_security(symbol: str) -> bool:
+    """NASDAQ's 5th-letter codes: W = warrant, U = unit, R = right (not shares)."""
+    return len(symbol) == 5 and symbol[-1] in "WUR"
+
+
+def _fetch_nasdaq_api(exchange_name: str, drop_spac_securities: bool = False) -> list[str]:
     """NASDAQ/NYSE: full listing from NASDAQ screener API."""
     r = requests.get(
         "https://api.nasdaq.com/api/screener/stocks",
@@ -83,7 +92,60 @@ def _fetch_nasdaq_api(exchange_name: str) -> list[str]:
         timeout=30,
     )
     r.raise_for_status()
-    return [row["symbol"] for row in r.json()["data"]["rows"] if row.get("symbol")]
+    symbols = [row["symbol"] for row in r.json()["data"]["rows"] if row.get("symbol")]
+    if drop_spac_securities:
+        symbols = [s for s in symbols if not _is_nasdaq_spac_security(s)]
+    return symbols
+
+
+DEUTSCHE_BOERSE_PAGE = (
+    "https://www.cashmarket.deutsche-boerse.com/cash-en/Data-Tech/statistics/listed-companies"
+)
+DEUTSCHE_BOERSE_SEGMENTS = ["Prime Standard", "General Standard", "Scale", "Basic Board"]
+
+
+def _fetch_deutsche_boerse() -> list[str]:
+    """XETRA: Deutsche Börse's monthly listed-companies file, all four segments."""
+    page = requests.get(DEUTSCHE_BOERSE_PAGE, headers=H, timeout=30)
+    page.raise_for_status()
+    # The file's URL carries a hash that changes with each monthly release.
+    match = re.search(r'href="([^"]*Listed-companies\.xlsx)"', page.text)
+    if not match:
+        raise ValueError("Listed-companies.xlsx link not found on Deutsche Börse page")
+    r = requests.get(urljoin(DEUTSCHE_BOERSE_PAGE, match.group(1)), headers=H, timeout=30)
+    r.raise_for_status()
+
+    book = pd.ExcelFile(io.BytesIO(r.content))
+    tickers: list[str] = []
+    for sheet in DEUTSCHE_BOERSE_SEGMENTS:
+        raw = pd.read_excel(book, sheet, header=None)
+        header_row = next(
+            i for i in range(len(raw))
+            if raw.iloc[i].astype(str).str.strip().eq("Trading Symbol").any()
+        )
+        df = raw.iloc[header_row + 1 :]
+        df.columns = [str(c).strip() for c in raw.iloc[header_row]]
+        tickers += [str(s).strip() + ".DE" for s in df["Trading Symbol"].dropna()]
+    return tickers
+
+
+def _fetch_xetra() -> list[str]:
+    """
+    Official Deutsche Börse list plus companiesmarketcap Germany, which adds
+    German companies whose primary listing is abroad (e.g. BioNTech).
+    Either source alone is enough for a refresh.
+    """
+    official: list[str] = []
+    extra: list[str] = []
+    try:
+        official = _fetch_deutsche_boerse()
+    except Exception as e:
+        logger.warning("Deutsche Börse list failed", extra={"error": str(e)})
+    try:
+        extra = _fetch_companiesmarketcap("germany", ".DE")
+    except Exception as e:
+        logger.warning("companiesmarketcap Germany failed", extra={"error": str(e)})
+    return list(dict.fromkeys(official + extra))
 
 
 def _fetch_yahoo_screener(exchange_code: str, region: str) -> list[str]:
@@ -157,10 +219,10 @@ def _fetch_hkex() -> list[str]:
 # ── Exchange config ───────────────────────────────────────────────────────────
 
 EXCHANGE_SOURCES = [
-    ("NASDAQ",         lambda: _fetch_nasdaq_api("NASDAQ")),
+    ("NASDAQ",         lambda: _fetch_nasdaq_api("NASDAQ", drop_spac_securities=True)),
     ("NYSE",           lambda: _fetch_nasdaq_api("NYSE")),
     ("LSE",            lambda: _fetch_yahoo_screener("LSE", "gb")),
-    ("XETRA",         lambda: _fetch_companiesmarketcap("germany", ".DE")),
+    ("XETRA",          _fetch_xetra),
     ("EURONEXT",       lambda: _fetch_yahoo_screener("PAR", "fr")),
     ("EURONEXT_AMS",   lambda: _fetch_yahoo_screener("AMS", "nl")),
     ("EURONEXT_BRU",   lambda: _fetch_yahoo_screener("BRU", "be")),
