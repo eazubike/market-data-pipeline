@@ -167,11 +167,28 @@ class OrchestrationStack(cdk.Stack):
             result_path="$.compact_result",
         )
 
+        # State: RegisterPartitions — make this run queryable in Athena right away
+        # instead of waiting for the next scheduled glue sync (up to 6h later).
+        # Partition projection can't replace this: run_timestamp has milliseconds.
+        register_partitions = sfn_tasks.LambdaInvoke(
+            self,
+            "RegisterPartitions",
+            lambda_function=update_glue_catalog_fn,
+            payload=sfn.TaskInput.from_object({"lookback_days": 1}),
+            result_path="$.glue_result",
+            result_selector={"partitions_added.$": "$.Payload.partitions_added"},
+        )
+        # Data is already in S3 and the scheduled sync will register it later,
+        # so a catalog hiccup shouldn't fail the run.
+        register_partitions.add_catch(
+            emit_metrics, errors=["States.ALL"], result_path="$.glue_error"
+        )
+
         # Chain the happy path
         definition = check_hours.next(
             check_open.when(
                 sfn.Condition.is_present("$.market_check.open_exchanges[0]"),
-                parallel_collect.next(compact_stocks).next(emit_metrics),
+                parallel_collect.next(compact_stocks).next(register_partitions).next(emit_metrics),
             ).otherwise(no_exchanges_open)
         )
 
