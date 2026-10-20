@@ -6,7 +6,7 @@ uploads them to S3. Runs once daily before market open.
 
 Sources:
   - NASDAQ/NYSE: NASDAQ screener API (full listings; NASDAQ drops SPAC
-    warrants/units/rights)
+    units/rights, which Trading 212 doesn't offer)
   - LSE: Yahoo Finance equity screener (the official SETS XLS stopped updating in 2020)
   - XETRA: Deutsche Börse official listed-companies XLSX (Prime, General, Scale,
     Basic Board) plus companiesmarketcap.com Germany. Not Yahoo's screener: its
@@ -79,8 +79,11 @@ def _existing_count(exchange: str) -> int:
 # ── Fetchers ──────────────────────────────────────────────────────────────────
 
 def _is_nasdaq_spac_security(symbol: str) -> bool:
-    """NASDAQ's 5th-letter codes: W = warrant, U = unit, R = right (not shares)."""
-    return len(symbol) == 5 and symbol[-1] in "WUR"
+    """
+    NASDAQ's 5th-letter codes U = unit, R = right. Warrants (W) are kept:
+    Trading 212 lists some (e.g. AACIW) but not units (AACOU) or rights (AACPR).
+    """
+    return len(symbol) == 5 and symbol[-1] in "UR"
 
 
 def _fetch_nasdaq_api(exchange_name: str, drop_spac_securities: bool = False) -> list[str]:
