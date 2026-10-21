@@ -53,6 +53,11 @@ SEC_HEADERS = {
     "Accept-Encoding": "gzip, deflate",
 }
 EDGAR_SEARCH_URL = "https://efts.sec.gov/LATEST/search-index"
+# SEC allows 10 req/s per client and two tasks (NASDAQ, NYSE) run at once:
+# 0.25s between filing downloads keeps them at ~8 req/s combined.
+EDGAR_XML_SLEEP_S = 0.25
+EDGAR_PAGE_RETRIES = 3
+EDGAR_BACKOFF_S = 5
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PARQUET SCHEMA
@@ -267,6 +272,7 @@ def collect_sec_edgar(run_date: date, lookback_days: int = 2) -> list[dict]:
     page_size = 100
     total_filings = 0
 
+    total = 0
     while True:
         params = {
             "q": "",
@@ -277,20 +283,28 @@ def collect_sec_edgar(run_date: date, lookback_days: int = 2) -> list[dict]:
             "from": offset,
             "size": page_size,
         }
-        try:
-            r = requests.get(
-                EDGAR_SEARCH_URL, params=params, headers=SEC_HEADERS, timeout=20
-            )
-            r.raise_for_status()
-            data = r.json()
-        except Exception as exc:
-            print(f"  [warn] SEC EDGAR search failed: {exc}")
-            break
-
-        hits = data.get("hits", {}).get("hits", [])
-        total = data.get("hits", {}).get("total", {}).get("value", 0)
+        # The NASDAQ and NYSE tasks hit SEC at the same time; when SEC throttles,
+        # a page comes back empty before `total` is reached. Back off and retry
+        # instead of treating it as the end (runs were stopping at 200 of ~740).
+        hits: list = []
+        for attempt in range(EDGAR_PAGE_RETRIES + 1):
+            try:
+                r = requests.get(
+                    EDGAR_SEARCH_URL, params=params, headers=SEC_HEADERS, timeout=20
+                )
+                r.raise_for_status()
+                data = r.json()
+                hits = data.get("hits", {}).get("hits", [])
+                total = data.get("hits", {}).get("total", {}).get("value", total)
+            except Exception as exc:
+                print(f"  [warn] SEC EDGAR search failed (attempt {attempt + 1}): {exc}")
+            if hits or (total and offset >= total):
+                break
+            time.sleep(EDGAR_BACKOFF_S * (2**attempt))
 
         if not hits:
+            if offset < total:
+                print(f"  [warn] SEC EDGAR gave up at offset={offset} of total={total}")
             break
 
         total_filings += len(hits)
@@ -314,7 +328,7 @@ def collect_sec_edgar(run_date: date, lookback_days: int = 2) -> list[dict]:
             xml_url = f"https://www.sec.gov/Archives/edgar/data/{issuer_cik}/{accession_no_dashes}/{filename}"
 
             try:
-                time.sleep(0.12)
+                time.sleep(EDGAR_XML_SLEEP_S)
                 r2 = requests.get(xml_url, headers=SEC_HEADERS, timeout=15)
                 if r2.status_code != 200:
                     continue

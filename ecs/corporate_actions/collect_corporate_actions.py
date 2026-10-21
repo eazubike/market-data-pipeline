@@ -102,8 +102,11 @@ def _filter_recent(series: pd.Series, lookback_days: int) -> pd.Series:
     if series is None or series.empty:
         return pd.Series(dtype=float)
     cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=lookback_days)
-    if series.index.tz is None:
-        series.index = series.index.tz_localize("UTC")
+    # Yahoo occasionally returns a non-datetime index (e.g. strings) for bad
+    # symbols; coerce it and drop anything unparseable rather than crash.
+    series = series.copy()
+    series.index = pd.to_datetime(series.index, utc=True, errors="coerce")
+    series = series[series.index.notna()]
     return series[series.index >= cutoff]
 
 
@@ -133,9 +136,9 @@ def main():
     for idx, symbol in enumerate(tickers):
         splits, dividends = _fetch_actions_with_retry(symbol)
 
-        recent_splits = _filter_recent(splits, LOOKBACK_DAYS)
-        for event_ts, ratio in recent_splits.items():
-            split_rows.append(
+        # One malformed ticker must not take down the whole exchange's task.
+        try:
+            ticker_splits = [
                 {
                     "symbol": symbol,
                     "exchange": exchange,
@@ -143,11 +146,9 @@ def main():
                     "ratio": float(ratio),
                     "collection_date": run_date,
                 }
-            )
-
-        recent_divs = _filter_recent(dividends, LOOKBACK_DAYS)
-        for ex_date_ts, amount in recent_divs.items():
-            dividend_rows.append(
+                for event_ts, ratio in _filter_recent(splits, LOOKBACK_DAYS).items()
+            ]
+            ticker_divs = [
                 {
                     "symbol": symbol,
                     "exchange": exchange,
@@ -155,7 +156,14 @@ def main():
                     "amount": float(amount),
                     "collection_date": run_date,
                 }
-            )
+                for ex_date_ts, amount in _filter_recent(dividends, LOOKBACK_DAYS).items()
+            ]
+        except Exception as exc:
+            failed += 1
+            print(f"    skip {symbol}: {type(exc).__name__}: {exc}")
+            continue
+        split_rows.extend(ticker_splits)
+        dividend_rows.extend(ticker_divs)
 
         time.sleep(BATCH_SLEEP_S)
 

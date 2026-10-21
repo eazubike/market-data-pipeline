@@ -509,7 +509,9 @@ class ComputeStack(cdk.Stack):
             "AnalystTaskDef",
             family="market-data-analyst-ecs",
             cpu=256,
-            memory_limit_mib=512,
+            # Holds a whole exchange's rows (profiles with descriptions, earnings,
+            # holders) until the end; 512 MB OOM'd on Oct 14, and TSE is now 3.7k tickers.
+            memory_limit_mib=1024,
         )
 
         data_bucket.grant_read(self.analyst_task_def.task_role, "config/*")

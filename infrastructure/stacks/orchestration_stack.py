@@ -392,34 +392,17 @@ class OrchestrationStack(cdk.Stack):
         # VPC for ECS tasks
         vpc = ec2.Vpc.from_lookup(self, "OrchestrVpc", is_default=True)
 
-        collect_ca_task = sfn_tasks.EcsRunTask(
+        # One security group for all per-exchange ECS tasks (outbound only).
+        ecs_tasks_sg = ec2.SecurityGroup(
             self,
-            "CollectCorporateActionsForExchange",
-            integration_pattern=sfn.IntegrationPattern.RUN_JOB,
-            cluster=ecs_cluster,
-            task_definition=corporate_actions_task_def,
-            launch_target=sfn_tasks.EcsFargateLaunchTarget(
-                platform_version=ecs.FargatePlatformVersion.LATEST,
-            ),
-            assign_public_ip=True,
-            container_overrides=[
-                sfn_tasks.ContainerOverride(
-                    container_definition=corporate_actions_task_def.default_container,
-                    environment=[
-                        sfn_tasks.TaskEnvironmentVariable(
-                            name="EXCHANGE",
-                            value=sfn.JsonPath.string_at("$.exchange"),
-                        ),
-                    ],
-                ),
-            ],
-            result_path=sfn.JsonPath.DISCARD,
+            "EcsExchangeTasksSecurityGroup",
+            vpc=ecs_cluster.vpc,
+            description="Per-exchange ECS collection tasks (outbound only)",
+            allow_all_outbound=True,
         )
-        collect_ca_task.add_retry(
-            errors=["States.TaskFailed"],
-            interval=cdk.Duration.seconds(30),
-            max_attempts=2,
-            backoff_rate=2.0,
+
+        collect_ca_task, collect_ca_task_policy = self._exchange_ecs_task(
+            "CollectCorporateActionsForExchange", ecs_cluster, corporate_actions_task_def, ecs_tasks_sg
         )
 
         ca_map = sfn.Map(
@@ -489,41 +472,18 @@ class OrchestrationStack(cdk.Stack):
             removal_policy=cdk.RemovalPolicy.DESTROY,
         )
 
-        collect_analyst_task = sfn_tasks.EcsRunTask(
-            self,
-            "CollectAnalystDataForExchange",
-            integration_pattern=sfn.IntegrationPattern.RUN_JOB,
-            cluster=ecs_cluster,
-            task_definition=analyst_task_def,
-            launch_target=sfn_tasks.EcsFargateLaunchTarget(
-                platform_version=ecs.FargatePlatformVersion.LATEST,
-            ),
-            assign_public_ip=True,
-            container_overrides=[
-                sfn_tasks.ContainerOverride(
-                    container_definition=analyst_task_def.default_container,
-                    environment=[
-                        sfn_tasks.TaskEnvironmentVariable(
-                            name="EXCHANGE",
-                            value=sfn.JsonPath.string_at("$.exchange"),
-                        ),
-                    ],
-                ),
-            ],
-            result_path=sfn.JsonPath.DISCARD,
-        )
-        collect_analyst_task.add_retry(
-            errors=["States.TaskFailed"],
-            interval=cdk.Duration.seconds(30),
-            max_attempts=2,
-            backoff_rate=2.0,
+        collect_analyst_task, collect_analyst_task_policy = self._exchange_ecs_task(
+            "CollectAnalystDataForExchange", ecs_cluster, analyst_task_def, ecs_tasks_sg
         )
 
         analyst_map = sfn.Map(
             self,
             "CollectAnalystDataPerExchange",
             items_path="$.exchanges",
-            max_concurrency=7,
+            # All exchanges at once: run time = slowest exchange (NASDAQ ~1.6h)
+            # instead of queueing TSE/HKEX behind it. Each task has its own IP,
+            # and Fargate bills task time, so parallelism doesn't add cost.
+            max_concurrency=11,
             result_path="$.analyst_results",
             parameters={
                 "exchange.$": "$$.Map.Item.Value",
@@ -539,7 +499,7 @@ class OrchestrationStack(cdk.Stack):
             state_machine_name="market-data-analyst-v2",
             definition_body=sfn.DefinitionBody.from_chainable(analyst_definition),
             state_machine_type=sfn.StateMachineType.STANDARD,
-            timeout=cdk.Duration.minutes(120),
+            timeout=cdk.Duration.hours(4),
             logs=sfn.LogOptions(
                 destination=analyst_log_group,
                 level=sfn.LogLevel.ERROR,
@@ -584,41 +544,17 @@ class OrchestrationStack(cdk.Stack):
             removal_policy=cdk.RemovalPolicy.DESTROY,
         )
 
-        collect_financials_task = sfn_tasks.EcsRunTask(
-            self,
-            "CollectFinancialsForExchange",
-            integration_pattern=sfn.IntegrationPattern.RUN_JOB,
-            cluster=ecs_cluster,
-            task_definition=financials_task_def,
-            launch_target=sfn_tasks.EcsFargateLaunchTarget(
-                platform_version=ecs.FargatePlatformVersion.LATEST,
-            ),
-            assign_public_ip=True,
-            container_overrides=[
-                sfn_tasks.ContainerOverride(
-                    container_definition=financials_task_def.default_container,
-                    environment=[
-                        sfn_tasks.TaskEnvironmentVariable(
-                            name="EXCHANGE",
-                            value=sfn.JsonPath.string_at("$.exchange"),
-                        ),
-                    ],
-                ),
-            ],
-            result_path=sfn.JsonPath.DISCARD,
-        )
-        collect_financials_task.add_retry(
-            errors=["States.TaskFailed"],
-            interval=cdk.Duration.seconds(30),
-            max_attempts=2,
-            backoff_rate=2.0,
+        collect_financials_task, collect_financials_task_policy = self._exchange_ecs_task(
+            "CollectFinancialsForExchange", ecs_cluster, financials_task_def, ecs_tasks_sg
         )
 
         financials_map = sfn.Map(
             self,
             "CollectFinancialsPerExchange",
             items_path="$.exchanges",
-            max_concurrency=3,
+            # Was 3: NASDAQ alone takes ~1.9h, so HKEX never started in time and
+            # every weekly run timed out. Run all exchanges at once.
+            max_concurrency=11,
             result_path="$.financials_results",
             parameters={
                 "exchange.$": "$$.Map.Item.Value",
@@ -634,7 +570,7 @@ class OrchestrationStack(cdk.Stack):
             state_machine_name="market-data-financials-v2",
             definition_body=sfn.DefinitionBody.from_chainable(financials_definition),
             state_machine_type=sfn.StateMachineType.STANDARD,
-            timeout=cdk.Duration.minutes(120),  # 2 hours for ECS tasks
+            timeout=cdk.Duration.hours(4),  # longest exchange ~1.9h, with headroom
             logs=sfn.LogOptions(
                 destination=financials_log_group,
                 level=sfn.LogLevel.ERROR,
@@ -676,41 +612,17 @@ class OrchestrationStack(cdk.Stack):
             removal_policy=cdk.RemovalPolicy.DESTROY,
         )
 
-        collect_fundamentals_task = sfn_tasks.EcsRunTask(
-            self,
-            "CollectFundamentalsForExchange",
-            integration_pattern=sfn.IntegrationPattern.RUN_JOB,
-            cluster=ecs_cluster,
-            task_definition=fundamentals_task_def,
-            launch_target=sfn_tasks.EcsFargateLaunchTarget(
-                platform_version=ecs.FargatePlatformVersion.LATEST,
-            ),
-            assign_public_ip=True,
-            container_overrides=[
-                sfn_tasks.ContainerOverride(
-                    container_definition=fundamentals_task_def.default_container,
-                    environment=[
-                        sfn_tasks.TaskEnvironmentVariable(
-                            name="EXCHANGE",
-                            value=sfn.JsonPath.string_at("$.exchange"),
-                        ),
-                    ],
-                ),
-            ],
-            result_path=sfn.JsonPath.DISCARD,
-        )
-        collect_fundamentals_task.add_retry(
-            errors=["States.TaskFailed"],
-            interval=cdk.Duration.seconds(30),
-            max_attempts=2,
-            backoff_rate=2.0,
+        collect_fundamentals_task, collect_fundamentals_task_policy = self._exchange_ecs_task(
+            "CollectFundamentalsForExchange", ecs_cluster, fundamentals_task_def, ecs_tasks_sg
         )
 
         fundamentals_map = sfn.Map(
             self,
             "CollectFundamentalsPerExchange",
             items_path="$.exchanges",
-            max_concurrency=3,
+            # One exchange per task (largest ~3.8k tickers); all at once so the
+            # run finishes before detect-signals at 23:00.
+            max_concurrency=11,
             result_path=sfn.JsonPath.DISCARD,
             parameters={"exchange.$": "$$.Map.Item.Value"},
         )
@@ -765,34 +677,8 @@ class OrchestrationStack(cdk.Stack):
 
         insider_exchanges = ["NASDAQ", "NYSE", "LSE", "TSE", "HKEX"]
 
-        collect_insider_fargate_task = sfn_tasks.EcsRunTask(
-            self,
-            "CollectInsiderForExchange",
-            integration_pattern=sfn.IntegrationPattern.RUN_JOB,
-            cluster=ecs_cluster,
-            task_definition=insider_task_def,
-            launch_target=sfn_tasks.EcsFargateLaunchTarget(
-                platform_version=ecs.FargatePlatformVersion.LATEST,
-            ),
-            assign_public_ip=True,
-            container_overrides=[
-                sfn_tasks.ContainerOverride(
-                    container_definition=insider_task_def.default_container,
-                    environment=[
-                        sfn_tasks.TaskEnvironmentVariable(
-                            name="EXCHANGE",
-                            value=sfn.JsonPath.string_at("$.exchange"),
-                        ),
-                    ],
-                ),
-            ],
-            result_path=sfn.JsonPath.DISCARD,
-        )
-        collect_insider_fargate_task.add_retry(
-            errors=["States.TaskFailed"],
-            interval=cdk.Duration.seconds(30),
-            max_attempts=2,
-            backoff_rate=2.0,
+        collect_insider_fargate_task, collect_insider_fargate_task_policy = self._exchange_ecs_task(
+            "CollectInsiderForExchange", ecs_cluster, insider_task_def, ecs_tasks_sg
         )
 
         insider_fargate_map = sfn.Map(
@@ -1036,6 +922,17 @@ class OrchestrationStack(cdk.Stack):
         )
 
         # ── Outputs ───────────────────────────────────────────────────────────
+        # Permissions for the per-exchange ECS steps (see _exchange_ecs_task).
+        for ecs_state_machine, statements in [
+            (ca_state_machine, collect_ca_task_policy),
+            (analyst_state_machine, collect_analyst_task_policy),
+            (financials_state_machine, collect_financials_task_policy),
+            (fundamentals_state_machine, collect_fundamentals_task_policy),
+            (insider_fargate_state_machine, collect_insider_fargate_task_policy),
+        ]:
+            for statement in statements:
+                ecs_state_machine.add_to_role_policy(statement)
+
         cdk.CfnOutput(self, "StateMachineArn", value=state_machine.state_machine_arn)
         cdk.CfnOutput(
             self, "NewsStateMachineArn", value=news_state_machine.state_machine_arn
@@ -1071,3 +968,87 @@ class OrchestrationStack(cdk.Stack):
             value=glue_sync_state_machine.state_machine_arn,
         )
         cdk.CfnOutput(self, "AlertTopicArn", value=alert_topic.topic_arn)
+
+    def _exchange_ecs_task(
+        self,
+        construct_id: str,
+        cluster: "ecs.Cluster",
+        task_def: "ecs.FargateTaskDefinition",
+        security_group: ec2.ISecurityGroup,
+    ) -> tuple[sfn.CustomState, list[iam.PolicyStatement]]:
+        """
+        Run one exchange's ECS task (EXCHANGE=$.exchange) and wait for it.
+
+        Same state EcsRunTask produced, but the task is referenced only by its
+        fixed family name. EcsRunTask derived its IAM resource from the task
+        definition ARN, which carries the revision, so this stack imported an
+        export that changes on every task definition update; CloudFormation
+        refuses to update an export in use, so no ECS change could deploy.
+        Returns the state and the policy statements its state machine needs.
+        """
+        family = task_def.family
+        state = sfn.CustomState(
+            self,
+            construct_id,
+            state_json={
+                "Type": "Task",
+                "Resource": f"arn:{self.partition}:states:::ecs:runTask.sync",
+                "Parameters": {
+                    "Cluster": cluster.cluster_arn,
+                    "TaskDefinition": family,  # latest ACTIVE revision
+                    "LaunchType": "FARGATE",
+                    "PlatformVersion": "LATEST",
+                    "NetworkConfiguration": {
+                        "AwsvpcConfiguration": {
+                            "AssignPublicIp": "ENABLED",
+                            "Subnets": [s.subnet_id for s in cluster.vpc.public_subnets],
+                            "SecurityGroups": [security_group.security_group_id],
+                        }
+                    },
+                    "Overrides": {
+                        "ContainerOverrides": [
+                            {
+                                "Name": task_def.default_container.container_name,
+                                "Environment": [
+                                    {"Name": "EXCHANGE", "Value.$": "$.exchange"}
+                                ],
+                            }
+                        ]
+                    },
+                },
+                "ResultPath": None,
+                "Retry": [
+                    {
+                        "ErrorEquals": ["States.TaskFailed"],
+                        "IntervalSeconds": 30,
+                        "MaxAttempts": 2,
+                        "BackoffRate": 2,
+                    }
+                ],
+            },
+        )
+        statements = [
+            iam.PolicyStatement(
+                actions=["ecs:RunTask"],
+                resources=[
+                    f"arn:{self.partition}:ecs:{self.region}:{self.account}"
+                    f":task-definition/{family}:*"
+                ],
+            ),
+            iam.PolicyStatement(actions=["ecs:StopTask", "ecs:DescribeTasks"], resources=["*"]),
+            iam.PolicyStatement(
+                actions=["iam:PassRole"],
+                resources=[task_def.task_role.role_arn, task_def.execution_role.role_arn],
+            ),
+            iam.PolicyStatement(
+                actions=["events:PutTargets", "events:PutRule", "events:DescribeRule"],
+                resources=[
+                    self.format_arn(
+                        service="events",
+                        resource="rule",
+                        resource_name="StepFunctionsGetEventsForECSTaskRule",
+                    )
+                ],
+            ),
+        ]
+        return state, statements

@@ -9,7 +9,8 @@ into a single file per exchange/date.
 
 Environment variables:
     DATA_BUCKET   — S3 bucket name
-    EXCHANGES     — comma-separated list (default: all)
+    EXCHANGE      — single exchange (set per task by Step Functions)
+    EXCHANGES     — comma-separated list, used when EXCHANGE is unset (default: all)
     AWS_REGION    — region (default: us-east-1)
 """
 
@@ -27,6 +28,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import yfinance as yf
+from yfinance.exceptions import YFRateLimitError
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
@@ -34,13 +36,21 @@ import yfinance as yf
 
 DATA_BUCKET = os.environ["DATA_BUCKET"]
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
-EXCHANGES = os.environ.get(
-    "EXCHANGES",
-    "NASDAQ,NYSE,LSE,XETRA,EURONEXT,EURONEXT_AMS,EURONEXT_BRU,EURONEXT_LIS,BORSA_ITALIANA,TSE,HKEX",
+# Step Functions runs one task per exchange and passes EXCHANGE. Without it,
+# every task processed all exchanges: 11 copies racing on the same S3 keys
+# and tripping Yahoo's rate limit.
+EXCHANGES = (
+    os.environ.get("EXCHANGE")
+    or os.environ.get(
+        "EXCHANGES",
+        "NASDAQ,NYSE,LSE,XETRA,EURONEXT,EURONEXT_AMS,EURONEXT_BRU,EURONEXT_LIS,BORSA_ITALIANA,TSE,HKEX",
+    )
 ).split(",")
 
 BATCH_SIZE = 50
 BATCH_SLEEP_S = 1.0
+RATE_LIMIT_RETRIES = 3
+RATE_LIMIT_BACKOFF_S = 15
 
 s3 = boto3.client("s3", region_name=AWS_REGION)
 
@@ -129,10 +139,22 @@ def write_parquet_to_s3(df: pd.DataFrame, key: str) -> None:
     )
 
 
+def _info_with_retry(ticker: str) -> dict:
+    """yf .info, backing off on Yahoo rate limits instead of failing every later ticker."""
+    for attempt in range(RATE_LIMIT_RETRIES + 1):
+        try:
+            return yf.Ticker(ticker).info
+        except YFRateLimitError:
+            if attempt == RATE_LIMIT_RETRIES:
+                raise
+            time.sleep(RATE_LIMIT_BACKOFF_S * (2**attempt))
+    return {}
+
+
 def fetch_fundamentals(ticker: str) -> dict:
     """Fetch .info for a single ticker."""
     try:
-        info = yf.Ticker(ticker).info
+        info = _info_with_retry(ticker)
         return {
             "pe_ratio": _safe_float(info.get("trailingPE")),
             "pb_ratio": _safe_float(info.get("priceToBook")),

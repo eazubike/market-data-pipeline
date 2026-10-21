@@ -49,6 +49,15 @@ TABLE_REGISTRY = [
         "depth": 2,
     },
     {"name": "earnings_dates", "prefix": "analyst/type=earnings_dates/", "depth": 2},
+    {"name": "earnings_history", "prefix": "analyst/type=earnings_history/", "depth": 2},
+    {"name": "company_profiles", "prefix": "analyst/type=company_profiles/", "depth": 2},
+    {
+        "name": "institutional_holders",
+        "prefix": "analyst/type=institutional_holders/",
+        "depth": 2,
+    },
+    # Older runs wrote date=/exchange=, newer exchange=/date=; values map by name.
+    {"name": "financials", "prefix": "financials/", "depth": 2},
     {"name": "splits", "prefix": "corporate_actions/type=split/", "depth": 2},
     {"name": "dividends", "prefix": "corporate_actions/type=dividend/", "depth": 2},
     {"name": "insider_transactions", "prefix": "insider_transactions/", "depth": 2},
@@ -79,13 +88,22 @@ def _list_prefixes_at_depth(prefix: str, depth: int) -> list[str]:
     return results
 
 
-def _partition_values_from_key(key: str) -> list[str]:
+def _partition_values_from_key(
+    key: str, table_prefix: str, partition_keys: list[str]
+) -> list[str] | None:
     """
-    Extract ordered partition values from a Hive-style S3 key.
+    Partition values for a Hive-style S3 key, in the table's partition-key order.
+    Only the part below the table prefix counts, so a prefix like
+    'analyst/type=price_targets/' isn't mistaken for a partition, and values are
+    matched by name, so 'financials/exchange=X/date=Y/' maps to (date, exchange).
     e.g. 'stocks/date=2026-07-24/run_timestamp=.../exchange=NASDAQ/'
     → ['2026-07-24', '...', 'NASDAQ']
+    Returns None if the key doesn't have exactly the table's partition keys.
     """
-    return re.findall(r"=([^/]+)", key)
+    pairs = dict(re.findall(r"([^/=]+)=([^/]+)", key[len(table_prefix):]))
+    if sorted(pairs) != sorted(partition_keys):
+        return None
+    return [pairs[k] for k in partition_keys]
 
 
 def _get_existing_partitions(
@@ -156,7 +174,6 @@ def add_partitions_for_table(
 
     sd_template = table_info["StorageDescriptor"]
     partition_keys = [k["Name"] for k in table_info.get("PartitionKeys", [])]
-    expected_keys = len(partition_keys)
 
     # Get existing partitions (filtered to last N days via Glue Expression)
     existing = _get_existing_partitions(table_name, cutoff_date, partition_keys)
@@ -181,10 +198,8 @@ def add_partitions_for_table(
     added = 0
 
     for leaf in leaf_prefixes:
-        values = _partition_values_from_key(leaf)
+        values = _partition_values_from_key(leaf, prefix, partition_keys)
         if not values:
-            continue
-        if len(values) != expected_keys:
             continue
         if tuple(values) in existing:
             continue

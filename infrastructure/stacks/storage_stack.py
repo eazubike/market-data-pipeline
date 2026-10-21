@@ -288,6 +288,99 @@ class StorageStack(cdk.Stack):
             ],
         )
 
+        # Analyst — company profiles (sector/industry + valuation ratios).
+        # Written daily by the analyst ECS task; read by the undervaluation detector.
+        glue.S3Table(
+            self,
+            "CompanyProfilesTable",
+            database=glue_db,
+            table_name="company_profiles",
+            bucket=self.data_bucket,
+            s3_prefix="analyst/type=company_profiles/",
+            data_format=glue.DataFormat.PARQUET,
+            partition_keys=[
+                glue.Column(name="date", type=glue.Schema.DATE),
+                glue.Column(name="exchange", type=glue.Schema.STRING),
+            ],
+            columns=[
+                glue.Column(name="symbol", type=glue.Schema.STRING),
+                glue.Column(name="collection_date", type=glue.Schema.DATE),
+                glue.Column(name="company_name", type=glue.Schema.STRING),
+                glue.Column(name="sector", type=glue.Schema.STRING),
+                glue.Column(name="industry", type=glue.Schema.STRING),
+                glue.Column(name="description", type=glue.Schema.STRING),
+                glue.Column(name="country", type=glue.Schema.STRING),
+                glue.Column(name="employees", type=glue.Schema.BIG_INT),
+                glue.Column(name="website", type=glue.Schema.STRING),
+                glue.Column(name="forward_pe", type=glue.Schema.DOUBLE),
+                glue.Column(name="forward_eps", type=glue.Schema.DOUBLE),
+                glue.Column(name="trailing_pe", type=glue.Schema.DOUBLE),
+                glue.Column(name="price_to_sales", type=glue.Schema.DOUBLE),
+                glue.Column(name="price_to_book", type=glue.Schema.DOUBLE),
+                glue.Column(name="enterprise_value", type=glue.Schema.DOUBLE),
+                glue.Column(name="ebitda", type=glue.Schema.DOUBLE),
+                glue.Column(name="revenue_growth", type=glue.Schema.DOUBLE),
+                glue.Column(name="earnings_growth", type=glue.Schema.DOUBLE),
+                glue.Column(name="profit_margin", type=glue.Schema.DOUBLE),
+                glue.Column(name="operating_margin", type=glue.Schema.DOUBLE),
+                glue.Column(name="return_on_equity", type=glue.Schema.DOUBLE),
+                glue.Column(name="return_on_assets", type=glue.Schema.DOUBLE),
+                glue.Column(name="free_cash_flow", type=glue.Schema.DOUBLE),
+                glue.Column(name="beta", type=glue.Schema.DOUBLE),
+            ],
+        )
+
+        # Analyst — quarterly earnings history (EPS beats/misses).
+        # Read by the earnings-momentum and pre-earnings detectors.
+        glue.S3Table(
+            self,
+            "EarningsHistoryTable",
+            database=glue_db,
+            table_name="earnings_history",
+            bucket=self.data_bucket,
+            s3_prefix="analyst/type=earnings_history/",
+            data_format=glue.DataFormat.PARQUET,
+            partition_keys=[
+                glue.Column(name="date", type=glue.Schema.DATE),
+                glue.Column(name="exchange", type=glue.Schema.STRING),
+            ],
+            columns=[
+                glue.Column(name="symbol", type=glue.Schema.STRING),
+                glue.Column(name="collection_date", type=glue.Schema.DATE),
+                glue.Column(name="quarter_end", type=glue.Schema.DATE),
+                glue.Column(name="eps_estimate", type=glue.Schema.DOUBLE),
+                glue.Column(name="eps_actual", type=glue.Schema.DOUBLE),
+                glue.Column(name="revenue_estimate", type=glue.Schema.DOUBLE),
+                glue.Column(name="revenue_actual", type=glue.Schema.DOUBLE),
+                glue.Column(name="eps_surprise_pct", type=glue.Schema.DOUBLE),
+                glue.Column(name="beat_eps", type=glue.Schema.BOOLEAN),
+            ],
+        )
+
+        # Analyst — institutional holders.
+        glue.S3Table(
+            self,
+            "InstitutionalHoldersTable",
+            database=glue_db,
+            table_name="institutional_holders",
+            bucket=self.data_bucket,
+            s3_prefix="analyst/type=institutional_holders/",
+            data_format=glue.DataFormat.PARQUET,
+            partition_keys=[
+                glue.Column(name="date", type=glue.Schema.DATE),
+                glue.Column(name="exchange", type=glue.Schema.STRING),
+            ],
+            columns=[
+                glue.Column(name="symbol", type=glue.Schema.STRING),
+                glue.Column(name="collection_date", type=glue.Schema.DATE),
+                glue.Column(name="holder", type=glue.Schema.STRING),
+                glue.Column(name="shares", type=glue.Schema.BIG_INT),
+                glue.Column(name="value", type=glue.Schema.DOUBLE),
+                glue.Column(name="pct_held", type=glue.Schema.DOUBLE),
+                glue.Column(name="date_reported", type=glue.Schema.DATE),
+            ],
+        )
+
         # Financial statements — single long-format table covering
         # income statement, balance sheet, and cash flow (quarterly + annual)
         glue.S3Table(

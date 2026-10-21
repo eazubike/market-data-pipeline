@@ -165,7 +165,8 @@ def detect_insider_clusters(run_date: date) -> list[dict]:
     query = f"""
     SELECT symbol, exchange,
            COUNT(DISTINCT insider_name) as insider_count,
-           SUM(CASE WHEN transaction_type IN ('P', 'Buy') THEN shares * value_per_share ELSE 0 END) as total_value
+           SUM(CASE WHEN transaction_type IN ('P', 'Buy')
+                    THEN COALESCE(total_value, shares * price_per_share, 0) ELSE 0 END) as total_value
     FROM insider_transactions
     WHERE date >= DATE('{start_date}')
       AND transaction_type IN ('P', 'Buy')
