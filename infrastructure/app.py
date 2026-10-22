@@ -37,7 +37,6 @@ OrchestrationStack(
     "MarketDataOrchestration",
     check_market_hours_fn=compute.check_market_hours_fn,
     collect_stocks_fn=compute.collect_stocks_fn,
-    compact_stocks_fn=compute.compact_stocks_fn,
     collect_news_fn=compute.collect_news_fn,
     update_glue_catalog_fn=compute.update_glue_catalog_fn,
     emit_metrics_fn=compute.emit_metrics_fn,

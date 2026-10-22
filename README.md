@@ -9,8 +9,8 @@ Serverless data lake pipeline that collects global stock prices, financial news,
 ```
 EventBridge Scheduler
   │
-  ├─▶ market-data-pipeline-v2 (every 30 min)
-  │     CheckMarketHours → Map(CollectStocks) → CompactStocks → EmitMetrics
+  ├─▶ market-data-pipeline-v2 (every 2 h; each exchange's daily bar once, ≥2 h after its close)
+  │     CheckMarketHours → Map(CollectStocks) → MarkCollected → RegisterPartitions → EmitMetrics
   │
   ├─▶ market-data-news-pipeline-v2 (30 min weekdays / 4h weekends)
   │     CollectNews (RSS, Reddit, GDELT, Yahoo Finance, Marketaux)
@@ -213,7 +213,6 @@ market-data-pipeline/
 │   │   └── parquet_writer.py
 │   ├── check_market_hours/
 │   ├── collect_stocks/
-│   ├── compact_stocks/
 │   ├── collect_news/
 │   ├── update_glue_catalog/
 │   ├── emit_metrics/

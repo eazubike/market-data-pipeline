@@ -116,21 +116,6 @@ class ComputeStack(cdk.Stack):
             )
         )
 
-        # ── compact-stocks ────────────────────────────────────────────────────
-        self.compact_stocks_fn = lambda_.Function(
-            self,
-            "CompactStocks",
-            function_name="market-data-compact-stocks",
-            runtime=PYTHON_RUNTIME,
-            handler="handler.lambda_handler",
-            code=lambda_.Code.from_asset(f"{LAMBDAS_PATH}/compact_stocks"),
-            layers=all_layers,
-            memory_size=256,
-            timeout=cdk.Duration.minutes(5),
-            environment={**common_env},
-        )
-        data_bucket.grant_read_write(self.compact_stocks_fn, "stocks/*")
-
         # ── collect-news ──────────────────────────────────────────────────────
         self.collect_news_fn = lambda_.Function(
             self,

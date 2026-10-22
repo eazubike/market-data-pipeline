@@ -30,7 +30,6 @@ class OrchestrationStack(cdk.Stack):
         construct_id: str,
         check_market_hours_fn: lambda_.Function,
         collect_stocks_fn: lambda_.Function,
-        compact_stocks_fn: lambda_.Function,
         collect_news_fn: lambda_.Function,
         update_glue_catalog_fn: lambda_.Function,
         emit_metrics_fn: lambda_.Function,
@@ -96,7 +95,7 @@ class OrchestrationStack(cdk.Stack):
             backoff_rate=2.0,
         )
         # A chunk that still fails is recorded and skipped, so it can't abort
-        # the other chunks or stop compaction of the data that did land.
+        # the other chunks or the steps after collection.
         chunk_failed = sfn.Pass(self, "ChunkFailed")
         collect_stocks_job.add_catch(
             chunk_failed,
