@@ -167,6 +167,33 @@ def _extract_tickers(text: str) -> list[str]:
     return list({t for t in candidates if t not in _COMMON_WORDS})
 
 
+_CIK_RE = re.compile(r"\((\d{10})\)")
+_cik_to_ticker: dict[str, str] | None = None
+
+
+def _sec_filing_tickers(headline: str) -> list[str]:
+    """
+    Ticker for an SEC filing headline like '8-K - MAYS J W INC (0000054187) (Filer)',
+    via SEC's CIK→ticker file (fetched once per container).
+    """
+    global _cik_to_ticker
+    if _cik_to_ticker is None:
+        try:
+            resp = requests.get(
+                "https://www.sec.gov/files/company_tickers.json",
+                headers={"User-Agent": SEC_USER_AGENT},
+                timeout=20,
+            )
+            resp.raise_for_status()
+            _cik_to_ticker = {
+                str(row["cik_str"]).zfill(10): row["ticker"] for row in resp.json().values()
+            }
+        except Exception as exc:
+            logger.warning("SEC ticker map unavailable", extra={"error": str(exc)})
+            _cik_to_ticker = {}
+    return [t for cik in _CIK_RE.findall(headline) if (t := _cik_to_ticker.get(cik))]
+
+
 # ── Article ID ────────────────────────────────────────────────────────────────
 
 
@@ -219,30 +246,39 @@ def _parse_dt(value: Any) -> datetime:
 
 # ── RSS Feed Collection ───────────────────────────────────────────────────────
 
+# Removed Oct 2026 after testing (all returned nothing, silently): Reuters
+# (feed domain gone), BusinessWire and Seeking Alpha news.xml (empty feeds),
+# Google News markets topic (404), GlobeNewswire (403), Reddit (403, needs OAuth).
 RSS_FEEDS: dict[str, str] = {
-    "reuters": "https://feeds.reuters.com/reuters/businessNews",
     "marketwatch": "https://feeds.marketwatch.com/marketwatch/topstories",
     "cnbc": "https://www.cnbc.com/id/10000664/device/rss/rss.html",
+    "cnbc_markets": "https://www.cnbc.com/id/15839069/device/rss/rss.html",
     "ft": "https://www.ft.com/rss/home/uk",
+    "nasdaq_markets": "https://www.nasdaq.com/feed/rssoutbound?category=Markets",
+    # SEC current 8-K filings — material company events, usually before the press.
+    # SEC returns 403 unless the User-Agent includes a contact email.
     "sec_8k": (
         "https://www.sec.gov/cgi-bin/browse-edgar"
-        "?action=getcurrent&type=8-K&dateb=&owner=include&count=40&output=atom"
+        "?action=getcurrent&type=8-K&dateb=&owner=include&count=100&output=atom"
     ),
-    # Google News — business/finance
+    # Google News — business topic + last-day searches
     "google_business": "https://news.google.com/rss/topics/CAAqJggKIiBDQkFTRWdvSUwyMHZNRGx6TVdZU0FtVnVHZ0pWVXlnQVAB",
-    "google_markets": "https://news.google.com/rss/topics/CAAqKAgKIiJDQkFTRXdvSkwyMHZNR3gxZEhGZkVnSmxiaG9DVlZNb0FBUAE",
+    "google_markets": "https://news.google.com/rss/search?q=stock+market+when:1d&hl=en-US&gl=US&ceid=US:en",
+    "google_earnings": "https://news.google.com/rss/search?q=earnings+results+when:1d&hl=en-US&gl=US&ceid=US:en",
     # Seeking Alpha
     "seekingalpha_market": "https://seekingalpha.com/market_currents.xml",
-    "seekingalpha_news": "https://seekingalpha.com/news.xml",
     # PRNewswire — corporate press releases (earnings, M&A, dividends)
     "prnewswire_finance": "https://www.prnewswire.com/rss/financial-services-latest-news/financial-services-latest-news-list.rss",
     "prnewswire_earnings": "https://www.prnewswire.com/rss/earnings-latest-news/earnings-latest-news-list.rss",
-    # BusinessWire — corporate announcements
-    "businesswire": "https://feed.businesswire.com/rss/home/?rss=G1QFDERJXkJeEFpRWQ==",
     # Investing.com RSS
     "investing_news": "https://www.investing.com/rss/news.rss",
     "investing_stock": "https://www.investing.com/rss/news_14.rss",
 }
+
+# SEC requires "Name contact@email" in the User-Agent. Set SEC_USER_AGENT to a
+# real contact; the default mirrors the insider-transactions task.
+SEC_USER_AGENT = os.environ.get("SEC_USER_AGENT", "MarketDataPipeline research@example.com")
+DEFAULT_USER_AGENT = "Mozilla/5.0 (compatible; MarketDataPipeline/1.0)"
 
 
 def collect_rss(
@@ -251,7 +287,15 @@ def collect_rss(
     articles: list[dict] = []
     skipped = 0
     try:
-        feed = feedparser.parse(feed_url)
+        # Fetch with requests so we control the User-Agent and see the HTTP
+        # status: feedparser.parse(url) swallowed 403/404s and empty feeds,
+        # which is how five sources returned nothing for months unnoticed.
+        ua = SEC_USER_AGENT if "sec.gov" in feed_url else DEFAULT_USER_AGENT
+        resp = requests.get(feed_url, headers={"User-Agent": ua}, timeout=20)
+        resp.raise_for_status()
+        feed = feedparser.parse(resp.content)
+        if not feed.entries:
+            logger.warning("RSS feed returned no entries", extra={"source": source, "url": feed_url})
         for entry in feed.entries:
             url = entry.get("link", "")
             if not url:
@@ -266,6 +310,9 @@ def collect_rss(
                 entry.get("published") or entry.get("updated") or ""
             )
             text = f"{headline} {summary}"
+            symbols = (
+                _sec_filing_tickers(headline) if source == "sec_8k" else _extract_tickers(text)
+            )
             articles.append(
                 {
                     "article_id": aid,
@@ -274,7 +321,7 @@ def collect_rss(
                     "summary": summary[:1000],
                     "url": url,
                     "published_at": published_at,
-                    "symbols_mentioned": _extract_tickers(text),
+                    "symbols_mentioned": symbols,
                     "sentiment_score": _sentiment(headline, summary),
                     "topics": _detect_topics(text),
                     "collection_timestamp": collection_ts,
@@ -358,17 +405,23 @@ def collect_gdelt(table, collection_ts: datetime) -> tuple[list[dict], int]:
     articles: list[dict] = []
     skipped = 0
     try:
-        resp = requests.get(
-            "https://api.gdeltproject.org/api/v2/doc/doc",
-            params={
-                "mode": "artlist",
-                "theme": "ECON_STOCKMARKET",
-                "maxrecords": 75,
-                "timespan": "30min",
-                "format": "json",
-            },
-            timeout=20,
-        )
+        # GDELT allows ~1 request per 5s per IP and Lambda IPs are shared, so a
+        # first call often gets 429; one retry after the window usually passes.
+        for attempt in range(2):
+            resp = requests.get(
+                "https://api.gdeltproject.org/api/v2/doc/doc",
+                params={
+                    "mode": "artlist",
+                    "theme": "ECON_STOCKMARKET",
+                    "maxrecords": 75,
+                    "timespan": "30min",
+                    "format": "json",
+                },
+                timeout=20,
+            )
+            if resp.status_code != 429:
+                break
+            time.sleep(6)
         resp.raise_for_status()
         data = resp.json()
         for item in data.get("articles", []):
@@ -629,11 +682,8 @@ def lambda_handler(event: dict, context: LambdaContext) -> dict:
     all_articles.extend(arts)
     total_skipped += skipped
 
-    # Reddit
-    arts, skipped = collect_reddit(table, collection_ts)
-    all_articles.extend(arts)
-    total_skipped += skipped
-    logger.info("Reddit collected", extra={"new": len(arts), "skipped": skipped})
+    # Reddit: disabled — its RSS now returns 403 without OAuth (Oct 2026).
+    # collect_reddit is kept for when API credentials are added.
 
     # Yahoo Finance per-ticker news (top 50 stocks)
     arts, skipped = collect_yfinance_news(table, collection_ts)
