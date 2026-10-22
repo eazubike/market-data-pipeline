@@ -4,6 +4,9 @@ Serverless data lake pipeline that collects global stock prices, financial news,
 
 ---
 
+**Full architecture:** [docs/architecture.html](docs/architecture.html) (published at
+https://claude.ai/artifact/97MBDvjQEaVuHfKq5RYtoJ). Kept current with each structural change; see `CLAUDE.md`.
+
 ## Architecture
 
 ```

@@ -1,0 +1,302 @@
+<title>Market Data Pipeline</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column; the flow diagram and the 24h clock break wider and scroll inside themselves on phones. */
+:root {
+  --bg: #f6f7f8;
+  --surface: #ffffff;
+  --ink: #17212b;
+  --muted: #5b6875;
+  --line: #d9dee3;
+  --accent: #0d6e6e;      /* data flowing (teal) */
+  --accent-soft: #e2f1f0;
+  --warm: #b35c1e;        /* schedules / triggers */
+  --warm-soft: #f8ebe0;
+  --violet: #5a4fa8;      /* consumers */
+  --violet-soft: #ecebf7;
+  --display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11161c; --surface: #18202a; --ink: #e6ebf0; --muted: #98a5b2; --line: #2b3643;
+    --accent: #4fc1bd; --accent-soft: #15302f; --warm: #e39a5c; --warm-soft: #33251a;
+    --violet: #a59cf0; --violet-soft: #25233d; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11161c; --surface: #18202a; --ink: #e6ebf0; --muted: #98a5b2; --line: #2b3643;
+  --accent: #4fc1bd; --accent-soft: #15302f; --warm: #e39a5c; --warm-soft: #33251a;
+  --violet: #a59cf0; --violet-soft: #25233d; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink); font: 15px/1.6 var(--body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 32px 64px;
+}
+main { max-width: 1080px; margin: 0 auto; display: grid; gap: 48px; }
+.prose { max-width: 68ch; }
+h1, h2, h3 { font-family: var(--display); line-height: 1.15; text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(30px, 5vw, 44px); font-weight: 600; letter-spacing: -0.01em; }
+h2 { font-size: 24px; font-weight: 600; }
+h3 { font-size: 17px; font-weight: 600; }
+p { margin: 0; }
+.lede { color: var(--muted); font-size: 17px; margin-top: 10px; }
+.eyebrow { font: 500 12px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+section { display: grid; gap: 16px; }
+code, .mono { font-family: var(--mono); font-size: 0.86em; }
+code { background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; white-space: nowrap; }
+.meta { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 16px; font: 13px var(--mono); color: var(--muted); }
+
+/* ── Flow diagram ─────────────────────────────────── */
+.scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.flow { display: grid; grid-template-columns: repeat(5, minmax(170px, 1fr)); gap: 0; min-width: 920px; }
+.col { display: grid; align-content: start; gap: 10px; padding: 0 14px; position: relative; }
+.col + .col { border-left: 1px dashed var(--line); }
+.col-head { font: 600 13px var(--display); letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+  padding-bottom: 6px; display: flex; justify-content: space-between; align-items: baseline; }
+.col-head .arrow { color: var(--line); font-size: 18px; }
+.node { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 9px 11px; display: grid; gap: 3px; }
+.node b { font-weight: 600; font-size: 14px; line-height: 1.3; }
+.node span { font-size: 12.5px; color: var(--muted); line-height: 1.4; }
+.node .mono { color: var(--muted); font-size: 11.5px; overflow-wrap: anywhere; }
+.k-src  { border-left: 3px solid var(--muted); }
+.k-trig { border-left: 3px solid var(--warm); }
+.k-comp { border-left: 3px solid var(--accent); }
+.k-store{ border-left: 3px solid var(--accent); background: var(--accent-soft); }
+.k-use  { border-left: 3px solid var(--violet); }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; color: var(--muted); }
+.legend i { display: inline-block; width: 12px; height: 12px; border-radius: 2px; vertical-align: -1px; margin-right: 6px; }
+
+/* ── 24h clock ────────────────────────────────────── */
+.clock-wrap { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px 16px 8px; }
+#clock { display: block; min-width: 820px; width: 100%; height: auto; }
+#clock text { font-family: var(--mono); font-size: 11px; fill: var(--muted); }
+#clock .row-label { font-family: var(--body); font-size: 12.5px; fill: var(--ink); }
+#clock .grid { stroke: var(--line); stroke-width: 1; }
+#clock .bar-stock { fill: var(--accent); }
+#clock .bar-ecs { fill: var(--warm); }
+#clock .bar-lambda { fill: var(--violet); }
+#clock .tick-sched { stroke: var(--warm); stroke-width: 2; }
+.note { font-size: 13px; color: var(--muted); }
+
+/* ── Tables ───────────────────────────────────────── */
+table { border-collapse: collapse; width: 100%; min-width: 760px; font-size: 13.5px; }
+th { text-align: left; font: 600 12px var(--display); letter-spacing: .05em; text-transform: uppercase; color: var(--muted);
+  border-bottom: 1px solid var(--line); padding: 8px 10px; }
+td { border-bottom: 1px solid var(--line); padding: 9px 10px; vertical-align: top; }
+td:first-child { font-weight: 600; white-space: nowrap; }
+td .mono { color: var(--muted); }
+.pill { display: inline-block; font: 500 11.5px var(--mono); padding: 1px 7px; border-radius: 999px; white-space: nowrap; }
+.p-lambda { background: var(--violet-soft); color: var(--violet); }
+.p-ecs { background: var(--warm-soft); color: var(--warm); }
+.p-ok { background: var(--accent-soft); color: var(--accent); }
+
+/* ── Mechanics ────────────────────────────────────── */
+.steps { display: grid; gap: 0; counter-reset: s; max-width: 760px; }
+.step { display: grid; grid-template-columns: 34px 1fr; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); }
+.step::before { counter-increment: s; content: counter(s); font: 600 15px var(--display); color: var(--accent);
+  width: 26px; height: 26px; border: 1.5px solid var(--accent); border-radius: 50%; display: grid; place-items: center; }
+.step p { color: var(--muted); font-size: 14px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; display: grid; gap: 6px; align-content: start; min-width: 0; }
+.card p { font-size: 14px; color: var(--muted); }
+footer { font-size: 13px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 16px; }
+@media (max-width: 600px) { body { font-size: 14.5px; } main { gap: 40px; } }
+</style>
+
+<main>
+  <header>
+    <div class="eyebrow">Architecture · AWS us-east-1 · as of 22 Oct 2026</div>
+    <h1>Market Data Pipeline</h1>
+    <p class="lede prose">How prices, company data and news for about 16,000 stocks on 11 exchanges are collected, stored and turned into signals for the MarketPulse dashboard.</p>
+    <div class="meta"><span>3 CDK stacks</span><span>9 state machines</span><span>11 Lambdas</span><span>5 Fargate tasks</span><span>16 Athena tables</span></div>
+  </header>
+
+  <section>
+    <h2>How it fits together</h2>
+    <p class="prose">Everything runs on schedules. Each schedule starts a Step Functions state machine, which fans work out to Lambda functions or Fargate tasks. They write Parquet files to one S3 bucket, the Glue catalog makes those files queryable in Athena, and the signal engine and dashboard read through Athena.</p>
+    <div class="legend">
+      <span><i style="background:var(--muted)"></i>External source</span>
+      <span><i style="background:var(--warm)"></i>Trigger / orchestration</span>
+      <span><i style="background:var(--accent)"></i>Compute and storage</span>
+      <span><i style="background:var(--violet)"></i>Consumers</span>
+    </div>
+    <div class="scroll">
+      <div class="flow">
+        <div class="col">
+          <div class="col-head">Sources <span class="arrow">→</span></div>
+          <div class="node k-src"><b>Yahoo Finance</b><span>via yfinance: daily bars, fundamentals, analyst data, dividends, splits, financials, non-US insiders, ticker screener</span></div>
+          <div class="node k-src"><b>SEC EDGAR</b><span>Form 4 insider filings, 8-K filings, ticker map</span></div>
+          <div class="node k-src"><b>News feeds</b><span>14 RSS feeds (CNBC, FT, Google News, PR Newswire…), MarketAux API, GDELT</span></div>
+          <div class="node k-src"><b>Exchange lists</b><span>NASDAQ screener API, Deutsche Börse, HKEX</span></div>
+        </div>
+        <div class="col">
+          <div class="col-head">Triggers <span class="arrow">→</span></div>
+          <div class="node k-trig"><b>EventBridge Scheduler</b><span>14 schedules; times in UTC</span></div>
+          <div class="node k-trig"><b>Step Functions</b><span>One state machine per pipeline. Map states fan out per exchange or per 400-ticker chunk; failed items are caught, not fatal.</span></div>
+          <div class="node k-trig"><b>EventBridge rule</b><span>Weekly ticker-list refresh, Mon 12:00</span></div>
+        </div>
+        <div class="col">
+          <div class="col-head">Compute <span class="arrow">→</span></div>
+          <div class="node k-comp"><b>Lambda (Python 3.12)</b><span>check-market-hours, collect-stocks, collect-news, detect-signals, refresh-tickers, update-glue-catalog, emit-metrics</span></div>
+          <div class="node k-comp"><b>ECS Fargate</b><span>One task per exchange: fundamentals, analyst, corporate actions, insider, financials</span><span class="mono">cluster market-data-fundamentals</span></div>
+          <div class="node k-comp"><b>DynamoDB</b><span>News de-duplication</span><span class="mono">market-news-dedup</span></div>
+        </div>
+        <div class="col">
+          <div class="col-head">Storage <span class="arrow">→</span></div>
+          <div class="node k-store"><b>S3 data lake</b><span>Parquet, Hive-style folders (date=, exchange=)</span><span class="mono">market-data-082121306678-us-east-1</span></div>
+          <div class="node k-store"><b>Glue catalog + Athena</b><span>Database <code>market_data</code>, 16 tables; partitions registered after each run</span></div>
+          <div class="node k-store"><b>Config and state</b><span>Ticker lists, exchange hours, last collected day per exchange</span><span class="mono">config/ · state/</span></div>
+        </div>
+        <div class="col">
+          <div class="col-head">Consumers</div>
+          <div class="node k-use"><b>Signal engine</b><span>detect-signals: 7 detectors over Athena, nightly. Writes signals and opportunities.</span></div>
+          <div class="node k-use"><b>FastAPI</b><span>Runs locally on port 8000, queries Athena</span><span class="mono">api/</span></div>
+          <div class="node k-use"><b>MarketPulse (Next.js)</b><span>Dashboard, screener, opportunities, portfolio, watchlist. Port 3000.</span><span class="mono">frontend/</span></div>
+          <div class="node k-use"><b>CloudWatch</b><span>MarketData metrics incl. ChunksFailed; SNS topic market-data-alerts</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>A day in UTC</h2>
+    <p class="prose">When each job runs, drawn to scale. Stock collection has no fixed time: every 2 hours a check collects each exchange once its trading day has been closed for 2 hours. Times shown are for European and US summer time; after the clocks change they move an hour later.</p>
+    <div class="clock-wrap scroll"><svg id="clock" viewBox="0 0 900 360" role="img" aria-label="24-hour UTC schedule of all pipeline jobs"></svg></div>
+    <div class="legend">
+      <span><i style="background:var(--accent)"></i>Daily price bar collected</span>
+      <span><i style="background:var(--warm)"></i>Fargate job (bar = typical duration)</span>
+      <span><i style="background:var(--violet)"></i>Lambda job</span>
+      <span><i style="background:transparent;border:2px solid var(--warm);width:2px;border-radius:0"></i>2-hourly price check</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>Pipelines</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>State machine</th><th>Trigger (UTC)</th><th>Runs on</th><th>What it does</th><th>Writes</th></tr></thead>
+        <tbody>
+          <tr><td>market-data-pipeline-v2</td><td>Every 2 h, daily</td><td><span class="pill p-lambda">Lambda</span></td><td>Check market hours → collect daily bars in 400-ticker chunks (10 at a time) → mark exchange-day done → register partitions → metrics</td><td class="mono">stocks_daily/</td></tr>
+          <tr><td>market-data-news-pipeline-v2</td><td>Every 4 h</td><td><span class="pill p-lambda">Lambda</span></td><td>Pull feeds, drop duplicates, tag tickers and topics, score sentiment (VADER)</td><td class="mono">news/</td></tr>
+          <tr><td>market-data-corporate-actions-v2</td><td>Mon–Fri 07:00</td><td><span class="pill p-ecs">Fargate</span></td><td>Dividends and splits from the last 90 days, per exchange</td><td class="mono">corporate_actions/</td></tr>
+          <tr><td>market-data-analyst-v2</td><td>Mon–Fri 07:30</td><td><span class="pill p-ecs">Fargate</span></td><td>Price targets, recommendations, earnings dates and history, company profiles, institutional holders. All 11 exchanges at once, 4 h limit.</td><td class="mono">analyst/</td></tr>
+          <tr><td>market-data-fundamentals-v2</td><td>Mon–Fri 22:00</td><td><span class="pill p-ecs">Fargate</span></td><td>P/E, P/B, EPS, margins, market cap, short interest per stock</td><td class="mono">fundamentals/</td></tr>
+          <tr><td>market-data-insider-fargate-v2</td><td>Mon–Fri 22:30</td><td><span class="pill p-ecs">Fargate</span></td><td>US from SEC Form 4 filings; LSE, HKEX, TSE from Yahoo</td><td class="mono">insider_transactions/</td></tr>
+          <tr><td>market-data-signals-v2</td><td>Mon–Fri 23:00</td><td><span class="pill p-lambda">Lambda</span></td><td>Run 7 detectors; stocks with 2+ signals become scored opportunities (BUY / WATCH / NEUTRAL)</td><td class="mono">signals/</td></tr>
+          <tr><td>market-data-financials-v2</td><td>Sun 06:00</td><td><span class="pill p-ecs">Fargate</span></td><td>Income statement, balance sheet, cash flow (quarterly and annual)</td><td class="mono">financials/</td></tr>
+          <tr><td>market-data-glue-sync-v2</td><td>Mon–Fri 01, 07, 13, 19; Sat–Sun 20:00</td><td><span class="pill p-lambda">Lambda</span></td><td>Register any new S3 partitions from the last 30 days (backup to per-run registration)</td><td class="mono">Glue catalog</td></tr>
+          <tr><td>refresh-tickers <span class="note">(rule)</span></td><td>Mon 12:00</td><td><span class="pill p-lambda">Lambda</span></td><td>Rebuild the 11 ticker lists; refuses any list that shrinks by more than half</td><td class="mono">config/tickers/</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Where the data lives</h2>
+    <p class="prose">One S3 bucket, one Glue database. Every table is partitioned by <code>date</code>, and most also by <code>exchange</code>, so Athena only reads the days and markets a query asks for.</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Athena table</th><th>S3 prefix</th><th>Grain</th><th>Written by</th><th>Read by</th></tr></thead>
+        <tbody>
+          <tr><td>stocks_daily</td><td class="mono">stocks_daily/</td><td>1 row per stock per trading day; history from 22 Oct 2025</td><td>collect-stocks</td><td>detectors, API (prices, charts, portfolio)</td></tr>
+          <tr><td>fundamentals</td><td class="mono">fundamentals/</td><td>1 row per stock per weekday</td><td>fundamentals task</td><td>undervaluation detector, API</td></tr>
+          <tr><td>company_profiles</td><td class="mono">analyst/type=company_profiles/</td><td>per stock per day</td><td>analyst task</td><td>undervaluation detector, API</td></tr>
+          <tr><td>analyst_price_targets</td><td class="mono">analyst/type=price_targets/</td><td>per stock per day</td><td>analyst task</td><td>analyst-breakout detector, API</td></tr>
+          <tr><td>analyst_recommendations</td><td class="mono">analyst/type=recommendations/</td><td>per stock per period</td><td>analyst task</td><td>API</td></tr>
+          <tr><td>earnings_dates · earnings_history</td><td class="mono">analyst/type=earnings_*/</td><td>per stock per quarter</td><td>analyst task</td><td>earnings-momentum and pre-earnings detectors</td></tr>
+          <tr><td>institutional_holders</td><td class="mono">analyst/type=institutional_holders/</td><td>per holder per stock</td><td>analyst task</td><td>API</td></tr>
+          <tr><td>dividends · splits</td><td class="mono">corporate_actions/type=*/</td><td>per event</td><td>corporate-actions task</td><td>API</td></tr>
+          <tr><td>insider_transactions</td><td class="mono">insider_transactions/</td><td>per transaction</td><td>insider task</td><td>insider-cluster detector, API</td></tr>
+          <tr><td>financials</td><td class="mono">financials/</td><td>per line item per period</td><td>financials task</td><td>API</td></tr>
+          <tr><td>news</td><td class="mono">news/</td><td>per article</td><td>collect-news</td><td>sentiment-divergence detector, API</td></tr>
+          <tr><td>signals · opportunities</td><td class="mono">signals/</td><td>per signal · per stock per night</td><td>detect-signals</td><td>API (opportunities page)</td></tr>
+          <tr><td>stocks <span class="pill p-ok">archive</span></td><td class="mono">stocks/</td><td>2-hourly snapshots to 22 Oct 2026</td><td>no longer written</td><td>nothing</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>How a day's prices get collected</h2>
+    <p class="prose">The stock pipeline runs every 2 hours but collects each exchange's day exactly once, after it is final.</p>
+    <div class="steps">
+      <div class="step"><div><h3>Check every exchange in its own time zone</h3><p>check-market-hours asks: was today a trading day there (not a weekend or listed holiday), has it been at least 2 hours since that market's close, and is this day not yet recorded in <code>state/stocks_daily.json</code>? Most checks find nothing and stop. Daylight saving needs no handling.</p></div></div>
+      <div class="step"><div><h3>Plan chunks</h3><p>Each ready exchange's ticker list is split into chunks of 400. The request covers only days not yet collected: normally just today, or the missed days after an outage.</p></div></div>
+      <div class="step"><div><h3>Collect in parallel</h3><p>Up to 10 collect-stocks Lambdas run at once. Each fetches 50 tickers at a time with 4 parallel requests, a 60-second cap per batch and a stop before the Lambda time limit. It writes one Parquet file per trading day: <code>stocks_daily/date=…/exchange=…/part-…</code>. Retries overwrite the same file.</p></div></div>
+      <div class="step"><div><h3>Mark done only on full success</h3><p>An exchange-day is recorded as collected only if every chunk succeeded. A failed chunk, a time-out or an empty Yahoo response leaves it pending, and the next 2-hourly check retries it.</p></div></div>
+      <div class="step"><div><h3>Make it queryable</h3><p>New partitions are registered in Glue straight away, so the data is in Athena within minutes of the run finishing.</p></div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Design decisions</h2>
+    <div class="cards">
+      <div class="card"><h3>Daily bars, not intraday</h3><p>Snapshots every 2 hours were neither live nor a full intraday series. One final bar per stock per day is what screening and backtesting need.</p></div>
+      <div class="card"><h3>Chunked fan-out</h3><p>Exchanges are split into 400-ticker chunks so no Lambda runs near its 5-minute limit, and one bad chunk never cancels the rest.</p></div>
+      <div class="card"><h3>One Fargate task per exchange</h3><p>Heavier per-stock jobs run as separate tasks, all exchanges at once. Each task gets its own IP, which spreads Yahoo rate limits.</p></div>
+      <div class="card"><h3>ECS tasks referenced by name</h3><p>State machines call tasks by family name, so changing a task image never conflicts with cross-stack exports.</p></div>
+      <div class="card"><h3>Ticker lists match Trading 212</h3><p>Lists keep common shares and warrants, and drop SPAC units and rights, which Trading 212 doesn't offer.</p></div>
+      <div class="card"><h3>Pinned libraries</h3><p>Container images pin yfinance 0.2.61, pandas 2.2.3 and pyarrow 25.0.0, matching the Lambda layer.</p></div>
+    </div>
+  </section>
+
+  <footer>Infrastructure is defined in AWS CDK (Python) as three stacks: MarketDataStorage (S3, Glue, DynamoDB), MarketDataCompute (Lambdas, Fargate task definitions) and MarketDataOrchestration (state machines, schedules). Source: github.com/eazubike/market-data-pipeline.</footer>
+</main>
+
+<script>
+(function () {
+  const svg = document.getElementById("clock");
+  const NS = "http://www.w3.org/2000/svg";
+  const X0 = 190, X1 = 880, ROW = 26, TOP = 34;
+  const x = h => X0 + (X1 - X0) * h / 24;
+  const el = (tag, attrs, text) => {
+    const n = document.createElementNS(NS, tag);
+    for (const k in attrs) n.setAttribute(k, attrs[k]);
+    if (text != null) n.textContent = text;
+    svg.appendChild(n);
+    return n;
+  };
+  // [label, kind, start hour, duration hours]
+  const rows = [
+    ["Price check (every 2 h)", "check"],
+    ["Tokyo daily bar", "stock", 10, 0.15],
+    ["Hong Kong daily bar", "stock", 10, 0.15],
+    ["London daily bar", "stock", 18, 0.15],
+    ["Frankfurt, Paris, Milan…", "stock", 18, 0.15],
+    ["US daily bar", "stock", 22, 0.15],
+    ["Corporate actions", "ecs", 7, 0.75],
+    ["Analyst data", "ecs", 7.5, 1.6],
+    ["Fundamentals", "ecs", 22, 0.4],
+    ["Insider transactions", "ecs", 22.5, 0.5],
+    ["Signal engine", "lambda", 23, 0.1],
+    ["Glue sync", "glue"],
+  ];
+  const H = TOP + rows.length * ROW + 30;
+  svg.setAttribute("viewBox", `0 0 900 ${H}`);
+  for (let h = 0; h <= 24; h += 2) {
+    el("line", { x1: x(h), x2: x(h), y1: TOP - 8, y2: H - 26, class: "grid" });
+    el("text", { x: x(h), y: TOP - 14, "text-anchor": "middle" }, String(h).padStart(2, "0") + ":00");
+    el("text", { x: x(h), y: H - 10, "text-anchor": "middle" }, String(h).padStart(2, "0"));
+  }
+  rows.forEach(([label, kind, s, d], i) => {
+    const y = TOP + i * ROW;
+    el("text", { x: 0, y: y + 15, class: "row-label" }, label);
+    if (kind === "check") {
+      for (let h = 0; h < 24; h += 2) el("line", { x1: x(h), x2: x(h), y1: y + 4, y2: y + 20, class: "tick-sched" });
+    } else if (kind === "glue") {
+      [1, 7, 13, 19].forEach(h => el("rect", { x: x(h) - 2, y: y + 6, width: 6, height: 12, rx: 1.5, class: "bar-lambda" }));
+    } else {
+      const cls = kind === "stock" ? "bar-stock" : kind === "ecs" ? "bar-ecs" : "bar-lambda";
+      el("rect", { x: x(s), y: y + 6, width: Math.max(6, x(s + d) - x(s)), height: 12, rx: 2, class: cls });
+    }
+  });
+})();
+</script>
