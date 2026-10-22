@@ -262,13 +262,17 @@ def detect_sentiment_divergence(run_date: date) -> list[dict]:
         GROUP BY element_at(symbols_mentioned, 1)
         HAVING COUNT(*) >= 3
     ),
+    -- First vs last daily close in the window. (The old (MAX-MIN)/MIN was
+    -- always positive, so "good news but price fell" could never fire.)
     price_change AS (
         SELECT symbol, exchange,
-               (MAX(price) - MIN(price)) / MIN(price) * 100 as price_change_pct,
-               MAX(price) as latest_price
-        FROM stocks
+               (max_by(adj_close, date) - min_by(adj_close, date))
+                   / min_by(adj_close, date) * 100 as price_change_pct,
+               max_by(close, date) as latest_price
+        FROM stocks_daily
         WHERE date >= DATE('{start_date}')
         GROUP BY symbol, exchange
+        HAVING COUNT(*) >= 2
     )
     SELECT s.symbol, p.exchange, s.avg_sentiment, s.article_count,
            p.price_change_pct, p.latest_price
@@ -391,23 +395,30 @@ def detect_analyst_breakout(run_date: date) -> list[dict]:
 
 def detect_volume_surge(run_date: date) -> list[dict]:
     """
-    Detect stocks with volume > 2x their 30-day average.
+    Detect stocks whose latest daily volume is > 2x their prior 30-day
+    average daily volume. "Latest" is per exchange, since exchanges finish
+    their days at different times.
     """
-    date_str = run_date.isoformat()
+    window_start = (run_date - timedelta(days=45)).isoformat()
     query = f"""
-    WITH today_vol AS (
-        SELECT symbol, exchange, MAX(volume) as today_volume
-        FROM stocks
-        WHERE date = DATE('{date_str}')
-        GROUP BY symbol, exchange
+    WITH latest AS (
+        SELECT exchange, MAX(date) as d
+        FROM stocks_daily
+        WHERE date >= DATE('{(run_date - timedelta(days=7)).isoformat()}')
+        GROUP BY exchange
+    ),
+    today_vol AS (
+        SELECT s.symbol, s.exchange, s.volume as today_volume
+        FROM stocks_daily s JOIN latest l ON s.exchange = l.exchange AND s.date = l.d
     ),
     avg_vol AS (
-        SELECT symbol, exchange, AVG(volume) as avg_volume_30d
-        FROM stocks
-        WHERE date >= DATE('{(run_date - timedelta(days=30)).isoformat()}')
-          AND date < DATE('{date_str}')
-        GROUP BY symbol, exchange
-        HAVING AVG(volume) > 100000
+        SELECT s.symbol, s.exchange, AVG(s.volume) as avg_volume_30d
+        FROM stocks_daily s JOIN latest l ON s.exchange = l.exchange
+        WHERE s.date >= DATE('{window_start}')
+          AND s.date < l.d
+          AND s.date >= date_add('day', -30, l.d)
+        GROUP BY s.symbol, s.exchange
+        HAVING AVG(s.volume) > 100000
     )
     SELECT t.symbol, t.exchange, t.today_volume, a.avg_volume_30d,
            CAST(t.today_volume AS DOUBLE) / a.avg_volume_30d as volume_ratio
@@ -595,10 +606,11 @@ def enrich_opportunities(opp_df: pd.DataFrame, run_date: date) -> pd.DataFrame:
 
     # Get latest price
     query = f"""
-    SELECT symbol, exchange, price
-    FROM stocks
-    WHERE date = (SELECT MAX(date) FROM stocks)
+    SELECT symbol, exchange, max_by(close, date) as price
+    FROM stocks_daily
+    WHERE date >= DATE('{(run_date - timedelta(days=10)).isoformat()}')
       AND symbol IN ({symbols_str})
+    GROUP BY symbol, exchange
     """
     price_df = run_athena_query(query)
     if not price_df.empty:

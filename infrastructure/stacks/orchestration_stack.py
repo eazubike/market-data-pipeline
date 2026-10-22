@@ -67,6 +67,7 @@ class OrchestrationStack(cdk.Stack):
             payload=sfn.TaskInput.from_json_path_at("$"),
             result_selector={
                 "open_exchanges.$": "$.Payload.open_exchanges",
+                "ready.$": "$.Payload.ready",
                 "chunks.$": "$.Payload.chunks",
             },
             result_path="$.market_check",
@@ -114,8 +115,8 @@ class OrchestrationStack(cdk.Stack):
                 "exchange.$": "$$.Map.Item.Value.exchange",
                 "offset.$": "$$.Map.Item.Value.offset",
                 "limit.$": "$$.Map.Item.Value.limit",
-                "run_timestamp.$": "$$.Execution.StartTime",
-                "date.$": "$$.Execution.StartTime",
+                "start_date.$": "$$.Map.Item.Value.start_date",
+                "end_date.$": "$$.Map.Item.Value.end_date",
             },
         )
         collect_stocks_map.item_processor(collect_stocks_job)
@@ -158,23 +159,34 @@ class OrchestrationStack(cdk.Stack):
 
         parallel_collect.add_catch(emit_metrics_on_error, result_path="$.error")
 
-        # State: CompactStocks (merge batch files into single parquet per partition)
-        compact_stocks = sfn_tasks.LambdaInvoke(
+        # State: MarkCollected — record each exchange-day whose chunks all
+        # succeeded, so later 2-hourly checks skip it; failures stay pending.
+        mark_collected = sfn_tasks.LambdaInvoke(
             self,
-            "CompactStocks",
-            lambda_function=compact_stocks_fn,
-            payload=sfn.TaskInput.from_json_path_at("$"),
-            result_path="$.compact_result",
+            "MarkCollected",
+            lambda_function=check_market_hours_fn,
+            payload=sfn.TaskInput.from_object(
+                {
+                    "action": "mark",
+                    "ready.$": "$.market_check.ready",
+                    "stocks_results.$": "$.parallel_results[0].stocks_results",
+                }
+            ),
+            result_path="$.mark_result",
+            result_selector={
+                "marked.$": "$.Payload.marked",
+                "pending_retry.$": "$.Payload.pending_retry",
+            },
         )
 
-        # State: RegisterPartitions — make this run queryable in Athena right away
-        # instead of waiting for the next scheduled glue sync (up to 6h later).
-        # Partition projection can't replace this: run_timestamp has milliseconds.
+        # State: RegisterPartitions — make the new daily bars queryable in
+        # Athena right away instead of waiting for the next scheduled glue sync.
+        # A week covers catch-up runs after missed days.
         register_partitions = sfn_tasks.LambdaInvoke(
             self,
             "RegisterPartitions",
             lambda_function=update_glue_catalog_fn,
-            payload=sfn.TaskInput.from_object({"lookback_days": 1}),
+            payload=sfn.TaskInput.from_object({"lookback_days": 7}),
             result_path="$.glue_result",
             result_selector={"partitions_added.$": "$.Payload.partitions_added"},
         )
@@ -188,7 +200,7 @@ class OrchestrationStack(cdk.Stack):
         definition = check_hours.next(
             check_open.when(
                 sfn.Condition.is_present("$.market_check.open_exchanges[0]"),
-                parallel_collect.next(compact_stocks).next(register_partitions).next(emit_metrics),
+                parallel_collect.next(mark_collected).next(register_partitions).next(emit_metrics),
             ).otherwise(no_exchanges_open)
         )
 
@@ -219,9 +231,11 @@ class OrchestrationStack(cdk.Stack):
             self,
             "MarketDataSchedule",
             name="market-data-hourly",
-            # Every 2 hours during global market hours (covers all 11 exchanges)
-            # 01:00 = TSE/HKEX open, 09:00 = LSE/EU open, 14:00 = US open, 21:00 = US close + 90min lookback
-            schedule_expression="cron(0 1,3,9,11,13,15,17,19,21 ? * MON-FRI *)",
+            # Every 2 hours, every day: check-market-hours collects each exchange's
+            # daily bar once, >= 2h after its local close. Most runs find nothing
+            # ready and end at NoExchangesOpen. Weekend runs pick up Friday's US
+            # close (Sat 00:00-02:00 UTC) and catch up any missed day.
+            schedule_expression="cron(0 0/2 * * ? *)",
             flexible_time_window=scheduler.CfnSchedule.FlexibleTimeWindowProperty(
                 mode="FLEXIBLE",
                 maximum_window_in_minutes=5,

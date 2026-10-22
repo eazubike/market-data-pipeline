@@ -90,6 +90,8 @@ class ComputeStack(cdk.Stack):
             environment={**common_env},
         )
         data_bucket.grant_read(self.check_market_hours_fn, "config/*")
+        # state/stocks_daily.json: last collected trade date per exchange
+        data_bucket.grant_read_write(self.check_market_hours_fn, "state/*")
 
         # ── collect-stocks ────────────────────────────────────────────────────
         self.collect_stocks_fn = lambda_.Function(
@@ -106,6 +108,7 @@ class ComputeStack(cdk.Stack):
         )
         data_bucket.grant_read(self.collect_stocks_fn, "config/*")
         data_bucket.grant_read_write(self.collect_stocks_fn, "stocks/*")
+        data_bucket.grant_read_write(self.collect_stocks_fn, "stocks_daily/*")
         self.collect_stocks_fn.add_to_role_policy(
             iam.PolicyStatement(
                 actions=["cloudwatch:PutMetricData"],

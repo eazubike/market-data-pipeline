@@ -60,7 +60,7 @@ async def debug_athena():
         DATA_BUCKET,
     )
 
-    result = await query_athena("SELECT symbol, price FROM stocks LIMIT 3")
+    result = await query_athena("SELECT symbol, close AS price FROM stocks_daily LIMIT 3")
     return {
         "result": result,
         "config": {

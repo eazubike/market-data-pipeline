@@ -36,6 +36,7 @@ GLUE_DATABASE = os.environ["GLUE_DATABASE"]
 # All tables and their S3 layout
 TABLE_REGISTRY = [
     {"name": "stocks", "prefix": "stocks/", "depth": 3},
+    {"name": "stocks_daily", "prefix": "stocks_daily/", "depth": 2},
     {"name": "fundamentals", "prefix": "fundamentals/", "depth": 2},
     {"name": "news", "prefix": "news/", "depth": 3},
     {

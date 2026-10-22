@@ -1,11 +1,14 @@
 """
 Lambda: collect-stocks
 
-Pulls OHLCV price snapshots for every ticker on a given exchange using
-yfinance (Yahoo Finance), then writes Parquet to S3 per-batch so partial
-progress is preserved even if the Lambda times out.
+Pulls daily OHLCV bars (start_date..end_date, exchange-local dates) for one
+chunk of an exchange's tickers using yfinance, and writes one Parquet file per
+bar date: stocks_daily/date=<bar date>/exchange=<X>/part-<offset>.parquet.
+File names are fixed per chunk, so a retry overwrites instead of duplicating.
 
-Fundamentals are collected separately by an ECS Fargate task (once daily).
+A normal run fetches just the finished trading day (start = end = trade
+date); after a missed run start is the day after the last collected day; the
+one-off backfill uses start = a year ago. Same request count either way.
 
 Data source: Yahoo Finance via the yfinance library (no API key required).
 Rate limiting is handled with per-batch sleeps and exponential backoff on 429s.
@@ -13,8 +16,8 @@ Rate limiting is handled with per-batch sleeps and exponential backoff on 429s.
 Input:
     {
       "exchange": "NASDAQ",
-      "run_timestamp": "2026-07-24T14:30:00Z",
-      "date": "2026-07-24",
+      "start_date": "2026-10-22",
+      "end_date": "2026-10-22",
       "offset": 0,      (optional) first ticker index of this chunk
       "limit": 400      (optional) number of tickers in this chunk
     }
@@ -22,9 +25,11 @@ Input:
 Output:
     {
       "exchange": "NASDAQ",
-      "tickers_ok": 3412,
-      "tickers_failed": 8,
-      "stocks_s3_prefix": "stocks/date=.../run_timestamp=.../exchange=NASDAQ/"
+      "tickers_ok": 390,
+      "tickers_failed": 10,
+      "rows_written": 390,
+      "dates_written": 1,
+      "incomplete": false
     }
 """
 
@@ -39,7 +44,7 @@ import time
 import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FuturesTimeout
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import boto3
@@ -74,16 +79,17 @@ MIN_REMAINING_MS = 45_000
 
 # ── Parquet schema ─────────────────────────────────────────────────────────────
 
-STOCKS_SCHEMA = pa.schema(
+# Raw OHLC as traded plus adj_close (split/dividend adjusted) for returns.
+DAILY_SCHEMA = pa.schema(
     [
         pa.field("symbol", pa.string()),
         pa.field("exchange", pa.string()),
-        pa.field("timestamp", pa.timestamp("us", tz="UTC")),
-        pa.field("price", pa.float64()),
+        pa.field("trade_date", pa.date32()),
         pa.field("open", pa.float64()),
         pa.field("high", pa.float64()),
         pa.field("low", pa.float64()),
         pa.field("close", pa.float64()),
+        pa.field("adj_close", pa.float64()),
         pa.field("volume", pa.int64()),
         pa.field("currency", pa.string()),
     ]
@@ -101,22 +107,24 @@ def _yahoo_symbol(ticker: str) -> str:
     return ticker.replace("/", "-")
 
 
-def _fetch_one(ticker: str) -> pd.DataFrame:
+def _fetch_one(ticker: str, start: str, end_exclusive: str) -> pd.DataFrame:
     return yf.Ticker(_yahoo_symbol(ticker)).history(
-        period="1d",
-        interval="30m",
-        auto_adjust=True,
+        start=start,
+        end=end_exclusive,
+        interval="1d",
+        auto_adjust=False,  # keep raw OHLC and the separate Adj Close
+        actions=False,
         timeout=TICKER_TIMEOUT_S,
         raise_errors=True,
     )
 
 
 def _fetch_batch(
-    tickers: list[str], deadline_s: float
+    tickers: list[str], start: str, end_exclusive: str, deadline_s: float
 ) -> tuple[dict[str, pd.DataFrame], dict[str, str]]:
     """
-    Fetch 1-day 30-minute bars for each ticker concurrently, never waiting past
-    deadline_s. Rate-limited tickers are retried with backoff.
+    Fetch daily bars [start, end_exclusive) for each ticker concurrently, never
+    waiting past deadline_s. Rate-limited tickers are retried with backoff.
 
     Returns (frames by ticker, error by failed ticker).
     """
@@ -128,7 +136,7 @@ def _fetch_batch(
     for attempt in range(MAX_RETRY + 1):
         rate_limited: list[str] = []
         pool = ThreadPoolExecutor(max_workers=FETCH_WORKERS)
-        futures = {pool.submit(_fetch_one, t): t for t in pending}
+        futures = {pool.submit(_fetch_one, t, start, end_exclusive): t for t in pending}
         try:
             for fut in as_completed(futures, timeout=max(deadline - time.monotonic(), 0)):
                 ticker = futures[fut]
@@ -178,31 +186,30 @@ def _memory_mb() -> tuple[float, float]:
     return round(current, 1), round(peak, 1)
 
 
-def _extract_latest_row(ticker_df: pd.DataFrame) -> dict | None:
-    """Pull the most recent bar from a single ticker's history df."""
-    try:
-        ticker_df = ticker_df.dropna(how="all")
-        if ticker_df.empty:
-            return None
-        row = ticker_df.iloc[-1]
-        ts = pd.Timestamp(ticker_df.index[-1])
-        ts = ts.tz_convert("UTC") if ts.tzinfo else ts.tz_localize("UTC")
-        return {
-            "price": float(row.get("Close", row.get("close", float("nan")))),
-            "open": float(row.get("Open", row.get("open", float("nan")))),
-            "high": float(row.get("High", row.get("high", float("nan")))),
-            "low": float(row.get("Low", row.get("low", float("nan")))),
-            "close": float(row.get("Close", row.get("close", float("nan")))),
-            "volume": int(row.get("Volume", row.get("volume", 0))),
-            "timestamp": ts.to_pydatetime(),
-        }
-    except Exception:
-        return None
-
-
-def _run_timestamp_to_s3_safe(ts: str) -> str:
-    """Convert '2026-07-24T14:30:00Z' → '2026-07-24T14-30-00Z' (S3-key safe)."""
-    return ts.replace(":", "-").rstrip("Z") + "Z"
+def _daily_rows(ticker_df: pd.DataFrame, start: str, end: str) -> list[dict]:
+    """
+    One row per daily bar in [start, end]. The index is midnight in the
+    exchange's timezone, so its date is the exchange-local trading date.
+    """
+    rows: list[dict] = []
+    df = ticker_df.dropna(subset=["Close"])
+    for ts, bar in df.iterrows():
+        trade_date = pd.Timestamp(ts).date()
+        if not (start <= trade_date.isoformat() <= end):
+            continue  # Yahoo can add an in-progress bar outside the range
+        close = float(bar["Close"])
+        rows.append(
+            {
+                "trade_date": trade_date,
+                "open": float(bar["Open"]),
+                "high": float(bar["High"]),
+                "low": float(bar["Low"]),
+                "close": close,
+                "adj_close": float(bar.get("Adj Close", close)),
+                "volume": int(bar["Volume"]) if pd.notna(bar["Volume"]) else 0,
+            }
+        )
+    return rows
 
 
 # ── Handler ────────────────────────────────────────────────────────────────────
@@ -212,9 +219,11 @@ def _run_timestamp_to_s3_safe(ts: str) -> str:
 @metrics.log_metrics(capture_cold_start_metric=True)
 def lambda_handler(event: dict, context: LambdaContext) -> dict:
     exchange: str = event["exchange"]
-    run_timestamp: str = event["run_timestamp"]  # ISO-8601 UTC
-    date_str: str = run_timestamp[:10]  # "2026-07-24"
-    run_ts_safe = _run_timestamp_to_s3_safe(run_timestamp)
+    start_date: str = event["start_date"]
+    end_date: str = event["end_date"]
+    end_exclusive = (
+        datetime.fromisoformat(end_date) + timedelta(days=1)
+    ).date().isoformat()
 
     # Get currency from exchange config
     exchanges_config = load_exchanges()
@@ -235,24 +244,26 @@ def lambda_handler(event: dict, context: LambdaContext) -> dict:
             "exchange": exchange,
             "tickers_ok": 0,
             "tickers_failed": 0,
-            "stocks_s3_key": "",
+            "rows_written": 0,
+            "dates_written": 0,
+            "incomplete": False,
         }
 
     logger.info(
-        "Starting price collection",
-        extra={"exchange": exchange, "ticker_count": len(tickers)},
+        "Starting daily collection",
+        extra={
+            "exchange": exchange,
+            "ticker_count": len(tickers),
+            "start_date": start_date,
+            "end_date": end_date,
+        },
     )
 
-    s3_prefix = (
-        f"stocks/date={date_str}/run_timestamp={run_ts_safe}/exchange={exchange}/"
-    )
     tickers_ok = 0
     tickers_failed = 0
-    batches_written = 0
+    chunk_rows: list[dict] = []
 
     batches = [tickers[i : i + BATCH_SIZE] for i in range(0, len(tickers), BATCH_SIZE)]
-    # Global batch numbering keeps file names unique across chunks that share
-    # the same S3 prefix (offset is a multiple of BATCH_SIZE).
     first_batch_no = offset // BATCH_SIZE
     incomplete = False
 
@@ -270,41 +281,22 @@ def lambda_handler(event: dict, context: LambdaContext) -> dict:
         deadline_s = min(
             BATCH_DEADLINE_S, context.get_remaining_time_in_millis() / 1000 - 20
         )
-        frames, errors = _fetch_batch(batch, deadline_s)
+        frames, errors = _fetch_batch(batch, start_date, end_exclusive, deadline_s)
 
-        batch_rows: list[dict] = []
+        batch_ok = 0
         for ticker in batch:
             df = frames.get(ticker)
-            row = _extract_latest_row(df) if df is not None else None
-            if row is None:
+            rows = _daily_rows(df, start_date, end_date) if df is not None else []
+            if not rows:
                 tickers_failed += 1
                 continue
+            for r in rows:
+                r.update(symbol=ticker, exchange=exchange, currency=currency)
+            chunk_rows.extend(rows)
+            batch_ok += 1
+        tickers_ok += batch_ok
 
-            batch_rows.append(
-                {
-                    "symbol": ticker,
-                    "exchange": exchange,
-                    "timestamp": row["timestamp"],
-                    "price": row["price"],
-                    "open": row["open"],
-                    "high": row["high"],
-                    "low": row["low"],
-                    "close": row["close"],
-                    "volume": row["volume"],
-                    "currency": currency,
-                }
-            )
-            tickers_ok += 1
-
-        # Write this batch to S3 immediately
-        if batch_rows:
-            batch_df = pd.DataFrame(batch_rows)
-            batch_key = f"{s3_prefix}batch_{first_batch_no + batch_idx + 1:04d}.parquet"
-            write_parquet(batch_df, batch_key, schema=STOCKS_SCHEMA)
-            batches_written += 1
-
-        batch_ok = len(batch_rows)
-        del frames, batch_rows
+        del frames
         gc.collect()
         rss_mb, peak_mb = _memory_mb()
         logger.info(
@@ -325,19 +317,32 @@ def lambda_handler(event: dict, context: LambdaContext) -> dict:
         if batch_idx < len(batches) - 1:
             time.sleep(BATCH_SLEEP_S)
 
+    # ── Write one file per bar date (fixed name per chunk: retries overwrite) ──
+    dates_written = 0
+    if chunk_rows:
+        all_df = pd.DataFrame(chunk_rows)
+        for trade_date, day_df in all_df.groupby("trade_date"):
+            key = (
+                f"stocks_daily/date={trade_date.isoformat()}/exchange={exchange}/"
+                f"part-{offset:05d}.parquet"
+            )
+            write_parquet(day_df, key, schema=DAILY_SCHEMA)
+            dates_written += 1
+
     # ── Emit CloudWatch metrics ───────────────────────────────────────────────
     metrics.add_dimension(name="Exchange", value=exchange)
     metrics.add_metric(name="StocksCollected", unit=MetricUnit.Count, value=tickers_ok)
     metrics.add_metric(name="StocksFailed", unit=MetricUnit.Count, value=tickers_failed)
 
     logger.info(
-        "Price collection complete",
+        "Daily collection complete",
         extra={
             "exchange": exchange,
             "tickers_ok": tickers_ok,
             "tickers_failed": tickers_failed,
-            "batches_written": batches_written,
-            "s3_prefix": s3_prefix,
+            "rows_written": len(chunk_rows),
+            "dates_written": dates_written,
+            "incomplete": incomplete,
         },
     )
 
@@ -345,6 +350,7 @@ def lambda_handler(event: dict, context: LambdaContext) -> dict:
         "exchange": exchange,
         "tickers_ok": tickers_ok,
         "tickers_failed": tickers_failed,
-        "stocks_s3_prefix": s3_prefix,
+        "rows_written": len(chunk_rows),
+        "dates_written": dates_written,
         "incomplete": incomplete,
     }

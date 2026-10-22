@@ -54,10 +54,11 @@ async def get_user_portfolio(user_id: str = Query(default="default")):
     symbols_str = ",".join(f"'{s}'" for s in symbols)
 
     prices = await query_athena(f"""
-        SELECT symbol, price
-        FROM stocks
-        WHERE date = (SELECT MAX(date) FROM stocks)
+        SELECT symbol, max_by(close, date) AS price
+        FROM stocks_daily
+        WHERE date >= current_date - INTERVAL '10' DAY
           AND symbol IN ({symbols_str})
+        GROUP BY symbol
     """)
     price_map = {r["symbol"]: r["price"] for r in prices}
 
@@ -148,10 +149,11 @@ async def get_user_watchlist(user_id: str = Query(default="default")):
 
     # Current prices
     prices = await query_athena(f"""
-        SELECT symbol, price
-        FROM stocks
-        WHERE date = (SELECT MAX(date) FROM stocks)
+        SELECT symbol, max_by(close, date) AS price
+        FROM stocks_daily
+        WHERE date >= current_date - INTERVAL '10' DAY
           AND symbol IN ({symbols_str})
+        GROUP BY symbol
     """)
     price_map = {r["symbol"]: r["price"] for r in prices}
 

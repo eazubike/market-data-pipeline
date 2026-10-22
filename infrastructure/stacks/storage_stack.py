@@ -104,6 +104,34 @@ class StorageStack(cdk.Stack):
             ],
         )
 
+        # Daily bars (one row per symbol per trading day, exchange-local date).
+        # Replaces the intraday "stocks" snapshots for analysis/backtesting;
+        # "stocks" stays as an archive.
+        glue.S3Table(
+            self,
+            "StocksDailyTable",
+            database=glue_db,
+            table_name="stocks_daily",
+            bucket=self.data_bucket,
+            s3_prefix="stocks_daily/",
+            data_format=glue.DataFormat.PARQUET,
+            partition_keys=[
+                glue.Column(name="date", type=glue.Schema.DATE),
+                glue.Column(name="exchange", type=glue.Schema.STRING),
+            ],
+            columns=[
+                glue.Column(name="symbol", type=glue.Schema.STRING),
+                glue.Column(name="trade_date", type=glue.Schema.DATE),
+                glue.Column(name="open", type=glue.Schema.DOUBLE),
+                glue.Column(name="high", type=glue.Schema.DOUBLE),
+                glue.Column(name="low", type=glue.Schema.DOUBLE),
+                glue.Column(name="close", type=glue.Schema.DOUBLE),
+                glue.Column(name="adj_close", type=glue.Schema.DOUBLE),
+                glue.Column(name="volume", type=glue.Schema.BIG_INT),
+                glue.Column(name="currency", type=glue.Schema.STRING),
+            ],
+        )
+
         # Fundamentals table
         glue.S3Table(
             self,

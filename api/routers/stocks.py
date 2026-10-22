@@ -18,10 +18,12 @@ async def get_stock_overview(symbol: str):
     # Latest price — use simple LIMIT instead of nested subquery
     price_data = await query_athena(
         f"""
-        SELECT symbol, exchange, price, open, high, low, close, volume, timestamp, currency
-        FROM stocks
+        SELECT symbol, exchange, close AS price, open, high, low, close, volume,
+               trade_date AS timestamp, currency
+        FROM stocks_daily
         WHERE symbol = '{symbol}'
-        ORDER BY date DESC, timestamp DESC
+          AND date >= current_date - INTERVAL '10' DAY
+        ORDER BY date DESC
         LIMIT 1
     """
     )
@@ -67,11 +69,12 @@ async def get_price_history(
 
     data = await query_athena(
         f"""
-        SELECT date, timestamp, price, open, high, low, close, volume
-        FROM stocks
+        SELECT date, trade_date AS timestamp, close AS price, open, high, low, close,
+               adj_close, volume
+        FROM stocks_daily
         WHERE symbol = '{symbol}'
           AND date >= DATE('{start_date}')
-        ORDER BY timestamp ASC
+        ORDER BY date ASC
     """
     )
 
