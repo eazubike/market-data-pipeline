@@ -181,6 +181,13 @@ def _fetch_with_retry(symbol: str):
     return None
 
 
+def _analyst_count(t) -> int | None:
+    try:
+        return t.info.get("numberOfAnalystOpinions")
+    except Exception:
+        return None
+
+
 def _collect_price_targets(t, symbol, exchange, collection_date):
     try:
         pt = t.analyst_price_targets
@@ -191,7 +198,9 @@ def _collect_price_targets(t, symbol, exchange, collection_date):
         mean = _safe_float(pt.get("mean"))
         high = _safe_float(pt.get("high"))
         median = _safe_float(pt.get("median"))
-        n = int(pt.get("numberOfAnalysts", 0) or 0)
+        # analyst_price_targets has no analyst count; it lives in .info
+        # (already fetched for the profile, so this is cached, not another call).
+        n = int(pt.get("numberOfAnalysts") or _analyst_count(t) or 0)
         upside = (
             ((mean / current) - 1) * 100
             if current and current > 0 and not pd.isna(mean)

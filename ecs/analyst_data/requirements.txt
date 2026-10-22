@@ -1,4 +1,6 @@
-yfinance>=0.2.61
-pandas>=2.0.0
-pyarrow>=14.0.0
+# Pinned to the versions in layer/ and scripts/: unpinned builds pulled
+# yfinance 1.x / pandas 3.x, which this code has never run against.
+yfinance==0.2.61
+pandas==2.2.3
+pyarrow==25.0.0
 boto3>=1.26.0

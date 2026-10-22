@@ -360,6 +360,10 @@ def detect_analyst_breakout(run_date: date) -> list[dict]:
     FROM analyst_price_targets pt
     WHERE pt.date = (SELECT MAX(date) FROM analyst_price_targets)
       AND pt.upside_pct > 15
+      -- Penny stocks with stale targets produce absurd upsides (e.g. $0.25 vs
+      -- a $508 target = +203,000%); keep those out of BUY signals.
+      AND pt.upside_pct <= 300
+      AND pt.current_price >= 1
       AND pt.number_of_analysts >= 5
     ORDER BY pt.upside_pct DESC
     LIMIT 50
