@@ -23,6 +23,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import yfinance as yf
+from yfinance.exceptions import YFRateLimitError
 
 DATA_BUCKET = os.environ["DATA_BUCKET"]
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
@@ -31,6 +32,10 @@ EXCHANGE = os.environ.get("EXCHANGE", "NASDAQ")
 BATCH_SLEEP_S = 0.3
 MAX_RETRY = 3
 RETRY_BASE_S = 5
+# Yahoo rate limits: wait and retry the same ticker. yfinance raises
+# YFRateLimitError (its message has no '429'), and swallowing it recorded
+# throttled tickers as having no data.
+RATE_LIMIT_BACKOFF_S = [30, 60, 120, 240, 300]
 LOOKBACK_DAYS = 90
 
 s3 = boto3.client("s3", region_name=AWS_REGION)
@@ -82,7 +87,7 @@ def write_parquet_to_s3(df: pd.DataFrame, key: str, schema: pa.Schema) -> None:
 
 
 def _fetch_actions_with_retry(symbol: str):
-    for attempt in range(MAX_RETRY):
+    for wait_s in RATE_LIMIT_BACKOFF_S + [None]:
         try:
             t = yf.Ticker(symbol)
             splits = t.splits if t.splits is not None else pd.Series(dtype=float)
@@ -91,10 +96,13 @@ def _fetch_actions_with_retry(symbol: str):
             )
             return splits, dividends
         except Exception as exc:
-            if "429" in str(exc):
-                time.sleep(RETRY_BASE_S * (2**attempt) + random.uniform(0, 2))
-            else:
+            limited = isinstance(exc, YFRateLimitError) or "429" in str(exc)
+            if not limited or wait_s is None:
+                if limited:
+                    print(f"    still rate limited at {symbol}, skipping")
                 return pd.Series(dtype=float), pd.Series(dtype=float)
+            print(f"    rate limited at {symbol}, waiting {wait_s}s")
+            time.sleep(wait_s + random.uniform(0, 2))
     return pd.Series(dtype=float), pd.Series(dtype=float)
 
 

@@ -24,12 +24,16 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import yfinance as yf
+from yfinance.exceptions import YFRateLimitError
 
 DATA_BUCKET = os.environ["DATA_BUCKET"]
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 EXCHANGE = os.environ.get("EXCHANGE", "NASDAQ")
 
 BATCH_SLEEP_S = 0.3
+# Yahoo rate limits: wait and retry the same ticker instead of recording it as
+# empty. Swallowing these made a run 'succeed' with ~640 of 3,863 NASDAQ tickers.
+RATE_LIMIT_BACKOFF_S = [30, 60, 120, 240, 300]
 MAX_RETRY = 3
 RETRY_BASE_S = 5
 
@@ -184,6 +188,8 @@ def _fetch_with_retry(symbol: str):
 def _analyst_count(t) -> int | None:
     try:
         return t.info.get("numberOfAnalystOpinions")
+    except YFRateLimitError:
+        raise  # handled by the main loop: back off and retry the ticker
     except Exception:
         return None
 
@@ -218,6 +224,8 @@ def _collect_price_targets(t, symbol, exchange, collection_date):
             "number_of_analysts": n,
             "upside_pct": upside,
         }
+    except YFRateLimitError:
+        raise  # handled by the main loop: back off and retry the ticker
     except Exception:
         return None
 
@@ -258,6 +266,8 @@ def _collect_recommendations(t, symbol, exchange, collection_date):
                     "consensus": consensus,
                 }
             )
+    except YFRateLimitError:
+        raise  # handled by the main loop: back off and retry the ticker
     except Exception:
         pass
     return rows
@@ -288,6 +298,8 @@ def _collect_earnings_dates(t, symbol, exchange, collection_date):
                     "is_future": is_future,
                 }
             )
+    except YFRateLimitError:
+        raise  # handled by the main loop: back off and retry the ticker
     except Exception:
         pass
     return rows
@@ -326,6 +338,8 @@ def _collect_company_profile(t, symbol, exchange, collection_date):
             "free_cash_flow": _safe_float(info.get("freeCashflow")),
             "beta": _safe_float(info.get("beta")),
         }
+    except YFRateLimitError:
+        raise  # handled by the main loop: back off and retry the ticker
     except Exception:
         return None
 
@@ -353,6 +367,8 @@ def _collect_institutional_holders(t, symbol, exchange, collection_date):
                     "date_reported": date_reported,
                 }
             )
+    except YFRateLimitError:
+        raise  # handled by the main loop: back off and retry the ticker
     except Exception:
         pass
     return rows
@@ -427,6 +443,8 @@ def _collect_earnings_history(t, symbol, exchange, collection_date):
                     "beat_eps": beat,
                 }
             )
+    except YFRateLimitError:
+        raise  # handled by the main loop: back off and retry the ticker
     except Exception:
         pass
     return rows
@@ -458,6 +476,7 @@ def main():
     inst_rows = []
     hist_rows = []
     failed = 0
+    rate_limited = 0
 
     for idx, symbol in enumerate(tickers):
         t = _fetch_with_retry(symbol)
@@ -466,19 +485,38 @@ def main():
             time.sleep(BATCH_SLEEP_S)
             continue
 
-        pt = _collect_price_targets(t, symbol, exchange, run_date)
+        collected = None
+        for wait_s in RATE_LIMIT_BACKOFF_S + [None]:
+            try:
+                collected = (
+                    _collect_price_targets(t, symbol, exchange, run_date),
+                    _collect_recommendations(t, symbol, exchange, run_date),
+                    _collect_earnings_dates(t, symbol, exchange, run_date),
+                    _collect_company_profile(t, symbol, exchange, run_date),
+                    _collect_institutional_holders(t, symbol, exchange, run_date),
+                    _collect_earnings_history(t, symbol, exchange, run_date),
+                )
+                break
+            except YFRateLimitError:
+                if wait_s is None:
+                    break
+                rate_limited += 1
+                print(f"    rate limited at {symbol} ({idx + 1}/{len(tickers)}), waiting {wait_s}s")
+                time.sleep(wait_s)
+                t = yf.Ticker(symbol)  # fresh object: don't reuse partly cached data
+        if collected is None:
+            failed += 1
+            continue
+
+        pt, recs, earns, profile, holders, history = collected
         if pt:
             pt_rows.append(pt)
-
-        rec_rows.extend(_collect_recommendations(t, symbol, exchange, run_date))
-        earn_rows.extend(_collect_earnings_dates(t, symbol, exchange, run_date))
-
-        profile = _collect_company_profile(t, symbol, exchange, run_date)
+        rec_rows.extend(recs)
+        earn_rows.extend(earns)
         if profile:
             profile_rows.append(profile)
-
-        inst_rows.extend(_collect_institutional_holders(t, symbol, exchange, run_date))
-        hist_rows.extend(_collect_earnings_history(t, symbol, exchange, run_date))
+        inst_rows.extend(holders)
+        hist_rows.extend(history)
 
         time.sleep(BATCH_SLEEP_S)
 
@@ -486,7 +524,7 @@ def main():
             print(
                 f"    {idx+1}/{len(tickers)} — targets={len(pt_rows)} recs={len(rec_rows)} "
                 f"earnings={len(earn_rows)} profiles={len(profile_rows)} "
-                f"holders={len(inst_rows)} history={len(hist_rows)} failed={failed}"
+                f"holders={len(inst_rows)} history={len(hist_rows)} failed={failed} rate_limited={rate_limited}"
             )
 
     # Write price targets

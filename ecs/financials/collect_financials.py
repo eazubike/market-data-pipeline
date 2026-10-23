@@ -26,6 +26,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import yfinance as yf
+from yfinance.exceptions import YFRateLimitError
 
 DATA_BUCKET = os.environ["DATA_BUCKET"]
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
@@ -34,6 +35,10 @@ EXCHANGE = os.environ.get("EXCHANGE", "NASDAQ")
 BATCH_SLEEP_S = 0.5
 MAX_RETRY = 3
 RETRY_BASE_S = 5
+# Yahoo rate limits: wait and retry the same ticker. yfinance raises
+# YFRateLimitError (its message has no '429'), and swallowing it recorded
+# throttled tickers as having no data.
+RATE_LIMIT_BACKOFF_S = [30, 60, 120, 240, 300]
 
 s3 = boto3.client("s3", region_name=AWS_REGION)
 
@@ -157,50 +162,60 @@ def main():
             time.sleep(BATCH_SLEEP_S)
             continue
 
-        try:
-            inc_q = _df_to_long(
-                t.quarterly_income_stmt,
-                symbol,
-                exchange,
-                "income",
-                "quarterly",
-                run_date,
-            )
-            bal_q = _df_to_long(
-                t.quarterly_balance_sheet,
-                symbol,
-                exchange,
-                "balance_sheet",
-                "quarterly",
-                run_date,
-            )
-            cf_q = _df_to_long(
-                t.quarterly_cashflow,
-                symbol,
-                exchange,
-                "cashflow",
-                "quarterly",
-                run_date,
-            )
-            inc_a = _df_to_long(
-                t.income_stmt, symbol, exchange, "income", "annual", run_date
-            )
-            bal_a = _df_to_long(
-                t.balance_sheet, symbol, exchange, "balance_sheet", "annual", run_date
-            )
-            cf_a = _df_to_long(
-                t.cashflow, symbol, exchange, "cashflow", "annual", run_date
-            )
+        for wait_s in RATE_LIMIT_BACKOFF_S + [None]:
+            try:
+                inc_q = _df_to_long(
+                    t.quarterly_income_stmt,
+                    symbol,
+                    exchange,
+                    "income",
+                    "quarterly",
+                    run_date,
+                )
+                bal_q = _df_to_long(
+                    t.quarterly_balance_sheet,
+                    symbol,
+                    exchange,
+                    "balance_sheet",
+                    "quarterly",
+                    run_date,
+                )
+                cf_q = _df_to_long(
+                    t.quarterly_cashflow,
+                    symbol,
+                    exchange,
+                    "cashflow",
+                    "quarterly",
+                    run_date,
+                )
+                inc_a = _df_to_long(
+                    t.income_stmt, symbol, exchange, "income", "annual", run_date
+                )
+                bal_a = _df_to_long(
+                    t.balance_sheet, symbol, exchange, "balance_sheet", "annual", run_date
+                )
+                cf_a = _df_to_long(
+                    t.cashflow, symbol, exchange, "cashflow", "annual", run_date
+                )
 
-            all_rows.extend(inc_q + inc_a + bal_q + bal_a + cf_q + cf_a)
-            if inc_q or inc_a:
-                income_ok += 1
-            if bal_q or bal_a:
-                balance_ok += 1
-            if cf_q or cf_a:
-                cashflow_ok += 1
-        except Exception:
-            failed += 1
+                all_rows.extend(inc_q + inc_a + bal_q + bal_a + cf_q + cf_a)
+                if inc_q or inc_a:
+                    income_ok += 1
+                if bal_q or bal_a:
+                    balance_ok += 1
+                if cf_q or cf_a:
+                    cashflow_ok += 1
+                break
+            except YFRateLimitError:
+                if wait_s is None:
+                    failed += 1
+                    break
+                print(f"    rate limited at {symbol} ({idx + 1}/{len(tickers)}), waiting {wait_s}s")
+                time.sleep(wait_s)
+                t = yf.Ticker(symbol)
+            except Exception:
+                failed += 1
+                break
 
         time.sleep(BATCH_SLEEP_S)
 

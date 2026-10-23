@@ -34,6 +34,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import requests
 import yfinance as yf
+from yfinance.exceptions import YFRateLimitError
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
@@ -45,6 +46,10 @@ EXCHANGE = os.environ.get("EXCHANGE", "NASDAQ")  # single exchange per task
 
 BATCH_SIZE = 50
 BATCH_SLEEP_S = 0.4
+# Yahoo rate limits: wait and retry the same ticker. yfinance raises
+# YFRateLimitError (its message has no '429'), and swallowing it recorded
+# throttled tickers as having no data.
+RATE_LIMIT_BACKOFF_S = [30, 60, 120, 240, 300]
 
 s3 = boto3.client("s3", region_name=AWS_REGION)
 
@@ -358,11 +363,20 @@ def collect_yfinance_insider(
     all_rows: list[dict] = []
 
     for i, ticker in enumerate(tickers):
-        try:
-            df = yf.Ticker(ticker).insider_transactions
-            if df is None or df.empty:
-                continue
-        except Exception:
+        df = None
+        for wait_s in RATE_LIMIT_BACKOFF_S + [None]:
+            try:
+                df = yf.Ticker(ticker).insider_transactions
+                break
+            except YFRateLimitError:
+                if wait_s is None:
+                    print(f"    still rate limited at {ticker}, skipping")
+                    break
+                print(f"    rate limited at {ticker} ({i + 1}/{len(tickers)}), waiting {wait_s}s")
+                time.sleep(wait_s)
+            except Exception:
+                break
+        if df is None or df.empty:
             continue
 
         for _, row in df.iterrows():
