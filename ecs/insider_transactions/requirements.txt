@@ -1,8 +1,10 @@
-# Pinned to the versions in layer/ and scripts/: unpinned builds pulled
-# yfinance 1.x / pandas 3.x, which this code has never run against.
-yfinance==0.2.61
-pandas==2.2.3
-pyarrow==25.0.0
+# Pinned to the versions in the Aug 2026 images that ran these jobs without
+# throttling. yfinance 0.2.61 (May 2025) got rate-limited by Yahoo after
+# ~640 tickers (Oct 23); don't downgrade. The Lambda layer pins separately.
+yfinance==1.6.0
+pandas==3.0.5
+pyarrow==25.0.1
+curl_cffi==0.16.0
 boto3>=1.26.0
 feedparser>=6.0.11
 requests>=2.31.0

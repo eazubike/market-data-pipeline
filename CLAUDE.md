@@ -26,4 +26,9 @@ Bug fixes that don't change structure, schedules or data layout don't need it.
 - Cross-stack exports can't change while imported. When a change removes or
   replaces something the other stack imports, deploy the importing stack first.
 - ECS images build locally with Docker; library versions are pinned in each
-  `ecs/*/requirements.txt` (match `layer/requirements.txt`).
+  `ecs/*/requirements.txt` to yfinance 1.6.0 / pandas 3.0.5 / pyarrow 25.0.1 /
+  curl_cffi 0.16.0 — the versions that ran without Yahoo throttling. Older
+  yfinance (0.2.61) got rate-limited after ~640 tickers; never downgrade it.
+  The Lambda layer (`layer/requirements.txt`, yfinance 0.2.61) is separate.
+- Yahoo rate limits must be retried, never swallowed: catch YFRateLimitError
+  explicitly, back off and retry the ticker (see ecs/analyst_data).
