@@ -1,5 +1,13 @@
 # Market Data Pipeline — notes for Claude
 
+## Progress log
+
+`docs/PROGRESS.md` is the running log for this project. Read its **Current state**,
+**Rules** and **Next** before starting. After every piece of work (fix, feature,
+deploy, rerun, investigation), add a dated entry at the top of its **Log**: what was
+done and why, what was verified, deploy status, commit hashes. Update **Current
+state** and **Next** when they change. Commit it with the work.
+
 ## Keep the architecture doc current
 
 `docs/architecture.html` is the architecture page for this project, published at
