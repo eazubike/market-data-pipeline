@@ -5,7 +5,8 @@ Anyone picking this up (human or AI agent): read **Current state** and **Rules**
 dated entries to **Log** when you change something.
 
 **Architecture page:** [architecture.html](architecture.html), published at https://claude.ai/artifact/97MBDvjQEaVuHfKq5RYtoJ
-(kept current with every structural change; see `CLAUDE.md`). Older history before Oct 2026: [../SESSION_STATUS.md](../SESSION_STATUS.md).
+(kept current with every structural change; see `CLAUDE.md`). Older history before Oct 2026 is in git (the Aug 2026
+`SESSION_STATUS.md` snapshot was deleted on 2026-10-26; recover with `git show 47643a3:SESSION_STATUS.md`).
 
 ## Current state (2026-10-26)
 
@@ -68,6 +69,10 @@ cd frontend; npm run dev        # then open http://localhost:3000
 - Athena CLI queries need `ResultConfiguration` `s3://market-data-082121306678-us-east-1/athena-results/` (primary workgroup has no output location).
 
 ## Log
+
+### 2026-10-26: Claude Code (removed SESSION_STATUS.md)
+- Deleted the Aug 2026 `SESSION_STATUS.md` at the owner's request: a frozen handover snapshot, outdated in places
+  (intraday collection, old ticker lists). This file is now the only status doc. Still in git history (commit 47643a3).
 
 ### 2026-10-26: Claude Code (progress log started)
 - Created this file and summarised the work since 2026-10-19 below. Added the "log every change" rule to `CLAUDE.md`.
